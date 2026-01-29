@@ -1,0 +1,894 @@
+openapi: 3.0.3
+info:
+  title: Address Scanner API
+  description: |
+    Multi-chain blockchain address aggregation service that provides real-time and historical 
+    transaction data for blockchain addresses across multiple chains.
+    
+    ## Features
+    - Track blockchain addresses across multiple chains (Ethereum, Polygon, Arbitrum, Optimism, Base)
+    - Real-time transaction synchronization
+    - Historical transaction backfill
+    - Portfolio management and aggregation
+    - Advanced filtering and search capabilities
+    
+    ## Authentication
+    Requests require `X-User-ID` header for user identification.
+    
+    ## Rate Limiting
+    - Free Tier: 1,000 requests/day
+    - Paid Tier: 100,000 requests/day
+    
+  version: 1.0.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Users
+    description: User management
+  - name: Addresses
+    description: Address tracking and transaction queries
+  - name: Portfolios
+    description: Portfolio management and aggregation
+  - name: Search
+    description: Transaction search capabilities
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                  service:
+                    type: string
+                    example: address-scanner
+
+  /api/users:
+    post:
+      tags: [Users]
+      summary: Create user
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user
+      operationId: getUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/addresses:
+    post:
+      tags: [Addresses]
+      summary: Add address for tracking
+      description: |
+        Add a blockchain address for tracking. Initiates backfill job:
+        - Free Tier: Last 1,000 transactions
+        - Paid Tier: All historical transactions
+      operationId: addAddress
+      parameters:
+        - $ref: '#/components/parameters/UserIdHeader'
+        - $ref: '#/components/parameters/UserTierHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddAddressRequest'
+      responses:
+        '201':
+          description: Address added for tracking
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressTrackingResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/addresses/{address}:
+    get:
+      tags: [Addresses]
+      summary: Get address details
+      operationId: getAddress
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/UserIdHeader'
+      responses:
+        '200':
+          description: Address details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressInfo'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Addresses]
+      summary: Remove address tracking
+      operationId: removeAddress
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - $ref: '#/components/parameters/UserIdHeader'
+      responses:
+        '200':
+          description: Address tracking removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoveAddressResult'
+
+  /api/addresses/{address}/transactions:
+    get:
+      tags: [Addresses]
+      summary: Get address transactions
+      description: Retrieve transactions with pagination and filtering
+      operationId: getTransactions
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - name: chains
+          in: query
+          schema:
+            type: string
+          description: Comma-separated chain IDs (ethereum,polygon,arbitrum,optimism,base)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: minValue
+          in: query
+          schema:
+            type: number
+        - name: maxValue
+          in: query
+          schema:
+            type: number
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [timestamp, value, block_number]
+            default: timestamp
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Transactions retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/addresses/{address}/balance:
+    get:
+      tags: [Addresses]
+      summary: Get address balance
+      operationId: getBalance
+      parameters:
+        - $ref: '#/components/parameters/AddressPath'
+        - name: chains
+          in: query
+          schema:
+            type: string
+          description: Comma-separated chain IDs
+      responses:
+        '200':
+          description: Balance retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressBalance'
+
+  /api/portfolios:
+    post:
+      tags: [Portfolios]
+      summary: Create portfolio
+      operationId: createPortfolio
+      parameters:
+        - $ref: '#/components/parameters/UserIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePortfolioRequest'
+      responses:
+        '201':
+          description: Portfolio created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Portfolio'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/portfolios/{id}:
+    get:
+      tags: [Portfolios]
+      summary: Get portfolio with aggregated data
+      operationId: getPortfolio
+      parameters:
+        - $ref: '#/components/parameters/PortfolioIdPath'
+        - $ref: '#/components/parameters/UserIdHeader'
+      responses:
+        '200':
+          description: Portfolio retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioView'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Portfolios]
+      summary: Update portfolio
+      operationId: updatePortfolio
+      parameters:
+        - $ref: '#/components/parameters/PortfolioIdPath'
+        - $ref: '#/components/parameters/UserIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePortfolioRequest'
+      responses:
+        '200':
+          description: Portfolio updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Portfolio'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Portfolios]
+      summary: Delete portfolio
+      operationId: deletePortfolio
+      parameters:
+        - $ref: '#/components/parameters/PortfolioIdPath'
+        - $ref: '#/components/parameters/UserIdHeader'
+      responses:
+        '200':
+          description: Portfolio deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletePortfolioResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/portfolios/{id}/statistics:
+    get:
+      tags: [Portfolios]
+      summary: Get portfolio statistics
+      operationId: getPortfolioStatistics
+      parameters:
+        - $ref: '#/components/parameters/PortfolioIdPath'
+        - $ref: '#/components/parameters/UserIdHeader'
+      responses:
+        '200':
+          description: Statistics retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioStatistics'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/portfolios/{id}/snapshots:
+    get:
+      tags: [Portfolios]
+      summary: Get portfolio snapshots
+      operationId: getPortfolioSnapshots
+      parameters:
+        - $ref: '#/components/parameters/PortfolioIdPath'
+        - $ref: '#/components/parameters/UserIdHeader'
+        - name: dateFrom
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: dateTo
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Snapshots retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PortfolioSnapshot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/search/transaction/{hash}:
+    get:
+      tags: [Search]
+      summary: Search transaction by hash
+      operationId: searchTransaction
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Transaction hash (0x...)
+      responses:
+        '200':
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  parameters:
+    UserIdHeader:
+      name: X-User-ID
+      in: header
+      required: true
+      schema:
+        type: string
+      description: User ID
+
+    UserTierHeader:
+      name: X-User-Tier
+      in: header
+      schema:
+        type: string
+        enum: [free, paid]
+        default: free
+      description: User tier
+
+    AddressPath:
+      name: address
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Blockchain address (0x...)
+      example: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+
+    PortfolioIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Portfolio ID
+
+  schemas:
+    CreateUserRequest:
+      type: object
+      required: [email, tier]
+      properties:
+        email:
+          type: string
+          format: email
+        tier:
+          type: string
+          enum: [free, paid]
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        tier:
+          type: string
+          enum: [free, paid]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    AddAddressRequest:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: string
+          description: Blockchain address (0x...)
+        chains:
+          type: array
+          items:
+            type: string
+            enum: [ethereum, polygon, arbitrum, optimism, base]
+          description: Chains to track (defaults to all)
+
+    AddressTrackingResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        address:
+          type: string
+        chains:
+          type: array
+          items:
+            type: string
+        trackingCreated:
+          type: boolean
+        backfillJobId:
+          type: string
+        backfillStatus:
+          type: string
+          enum: [queued, in_progress, completed, failed]
+
+    AddressInfo:
+      type: object
+      properties:
+        address:
+          type: string
+        message:
+          type: string
+
+    RemoveAddressResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        address:
+          type: string
+        message:
+          type: string
+
+    AddressBalance:
+      type: object
+      properties:
+        address:
+          type: string
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChainBalance'
+        updatedAt:
+          type: string
+          format: date-time
+
+    ChainBalance:
+      type: object
+      properties:
+        chain:
+          type: string
+        nativeBalance:
+          type: string
+        tokenBalances:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenBalance'
+
+    TokenBalance:
+      type: object
+      properties:
+        token:
+          type: string
+        symbol:
+          type: string
+        balance:
+          type: string
+        decimals:
+          type: integer
+
+    TransactionPage:
+      type: object
+      properties:
+        address:
+          type: string
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        cached:
+          type: boolean
+        queryTimeMs:
+          type: integer
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    Transaction:
+      type: object
+      properties:
+        hash:
+          type: string
+        chain:
+          type: string
+          enum: [ethereum, polygon, arbitrum, optimism, base]
+        from:
+          type: string
+        to:
+          type: string
+        value:
+          type: string
+        direction:
+          type: string
+          enum: [in, out]
+        timestamp:
+          type: integer
+          format: int64
+        blockNumber:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [success, failed]
+        gasUsed:
+          type: string
+        gasPrice:
+          type: string
+        tokenTransfers:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenTransfer'
+        methodId:
+          type: string
+        funcName:
+          type: string
+        input:
+          type: string
+
+    TokenTransfer:
+      type: object
+      properties:
+        token:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+        value:
+          type: string
+        symbol:
+          type: string
+        decimals:
+          type: integer
+
+    CreatePortfolioRequest:
+      type: object
+      required: [name, addresses]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        addresses:
+          type: array
+          items:
+            type: string
+          minItems: 1
+
+    UpdatePortfolioRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        addresses:
+          type: array
+          items:
+            type: string
+
+    Portfolio:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        addresses:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PortfolioView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        addresses:
+          type: array
+          items:
+            type: string
+        totalBalance:
+          $ref: '#/components/schemas/MultiChainBalance'
+        transactionCount:
+          type: integer
+        totalVolume:
+          type: string
+        topCounterparties:
+          type: array
+          items:
+            $ref: '#/components/schemas/Counterparty'
+        tokenHoldings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenHolding'
+        unifiedTimeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        lastUpdated:
+          type: string
+          format: date-time
+
+    MultiChainBalance:
+      type: object
+      properties:
+        chains:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChainBalance'
+        totalValueUsd:
+          type: string
+
+    Counterparty:
+      type: object
+      properties:
+        address:
+          type: string
+        transactionCount:
+          type: integer
+        totalVolume:
+          type: string
+        label:
+          type: string
+
+    TokenHolding:
+      type: object
+      properties:
+        token:
+          type: string
+        symbol:
+          type: string
+        balance:
+          type: string
+        decimals:
+          type: integer
+        chains:
+          type: array
+          items:
+            type: string
+        valueUsd:
+          type: string
+
+    DeletePortfolioResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        portfolioId:
+          type: string
+        message:
+          type: string
+
+    PortfolioStatistics:
+      type: object
+      properties:
+        portfolioId:
+          type: string
+          format: uuid
+        totalBalance:
+          $ref: '#/components/schemas/MultiChainBalance'
+        transactionCount:
+          type: integer
+        totalVolume:
+          type: string
+        averageTransactionValue:
+          type: string
+        topCounterparties:
+          type: array
+          items:
+            $ref: '#/components/schemas/Counterparty'
+        tokenHoldings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenHolding'
+        chainDistribution:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChainDistribution'
+        activityByDay:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActivityByDay'
+
+    ChainDistribution:
+      type: object
+      properties:
+        chain:
+          type: string
+        transactionCount:
+          type: integer
+        volume:
+          type: string
+        percentage:
+          type: number
+
+    ActivityByDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        transactionCount:
+          type: integer
+        volume:
+          type: string
+
+    PortfolioSnapshot:
+      type: object
+      properties:
+        portfolioId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        totalBalance:
+          $ref: '#/components/schemas/MultiChainBalance'
+        transactionCount:
+          type: integer
+        tokenHoldings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenHolding'
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

@@ -1,0 +1,157 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: address-scanner-postgres
+    environment:
+      POSTGRES_DB: address_scanner
+      POSTGRES_USER: scanner
+      POSTGRES_PASSWORD: scanner_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scanner"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - address-scanner-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: address-scanner-clickhouse
+    environment:
+      CLICKHOUSE_DB: address_scanner
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse_dev_password
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - address-scanner-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: address-scanner-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - address-scanner-network
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: address-scanner-server
+    command: ./server
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - CLICKHOUSE_HOST=clickhouse
+      - REDIS_HOST=redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - address-scanner-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: address-scanner-worker
+    command: ./worker
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - CLICKHOUSE_HOST=clickhouse
+      - REDIS_HOST=redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - address-scanner-network
+
+  backfill:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: address-scanner-backfill
+    command: ./backfill
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - CLICKHOUSE_HOST=clickhouse
+      - REDIS_HOST=redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - address-scanner-network
+
+  # Database UIs
+  adminer:
+    image: adminer:latest
+    container_name: address-scanner-adminer
+    ports:
+      - "5050:8080"
+    depends_on:
+      - postgres
+    networks:
+      - address-scanner-network
+
+  clickhouse-ui:
+    image: spoonest/clickhouse-tabix-web-client:latest
+    container_name: address-scanner-clickhouse-ui
+    ports:
+      - "8124:80"
+    depends_on:
+      - clickhouse
+    networks:
+      - address-scanner-network
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+
+networks:
+  address-scanner-network:
+    driver: bridge
