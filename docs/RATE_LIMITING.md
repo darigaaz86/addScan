@@ -6,6 +6,66 @@ This document describes the detailed implementation of the CU (Compute Unit) bud
 
 The rate limiting system coordinates Alchemy API usage between the Sync Worker (real-time) and Backfill Worker (historical) using Redis for cross-service coordination. It implements a sliding window rate limiter with separate budget pools.
 
+## Multi-Account RPC Pool
+
+For free tier users, a single Alchemy account (500 CU/s) may not be sufficient. The RPC Pool allows using multiple free accounts with automatic failover on rate limiting.
+
+### Configuration
+
+```bash
+# Single account (default)
+ETHEREUM_RPC_PRIMARY=https://eth-mainnet.g.alchemy.com/v2/key1
+
+# Multiple accounts (comma-separated)
+ETHEREUM_RPC_URLS=https://eth-mainnet.g.alchemy.com/v2/key1,https://eth-mainnet.g.alchemy.com/v2/key2,https://eth-mainnet.g.alchemy.com/v2/key3
+```
+
+### Strategy: Sticky with Failover
+
+```
+Account 1 ──► use until 429 ──► Account 2 ──► use until 429 ──► Account 3
+                                                                    │
+              ◄── cooldown expires, try to return to Account 1 ─────┘
+```
+
+- Stick to current account until it returns HTTP 429 (rate limited)
+- On 429, immediately switch to next account
+- After cooldown period (default: 60s), try to return to primary account
+
+### Usage
+
+```go
+// Create pool from comma-separated URLs
+provider, err := adapter.NewPooledRPCProviderFromURLs(os.Getenv("ETHEREUM_RPC_URLS"))
+
+// Or create manually
+pool, err := adapter.NewRPCPool(&adapter.RPCPoolConfig{
+    Endpoints: []string{
+        "https://eth-mainnet.g.alchemy.com/v2/key1",
+        "https://eth-mainnet.g.alchemy.com/v2/key2",
+        "https://eth-mainnet.g.alchemy.com/v2/key3",
+    },
+    CooldownTime: 60 * time.Second,
+})
+provider := adapter.NewPooledRPCProvider(pool)
+
+// Use with adapter
+adapter, err := adapter.NewEthereumAdapter(chainID, provider)
+```
+
+### Capacity with Multiple Accounts
+
+| Free Accounts | Effective CU/s | Monthly CU |
+|---------------|----------------|------------|
+| 1 | 500 | ~1.3B |
+| 2 | 1,000 | ~2.6B |
+| 3 | 1,500 | ~3.9B |
+| 5 | 2,500 | ~6.5B |
+
+With 3 free accounts + batched polling, you can comfortably run Ethereum + Base + BNB.
+
+## Architecture
+
 ## Architecture
 
 ```
@@ -326,6 +386,35 @@ if err != nil {
 | `eth_getLogs` | 75 |
 | `eth_call` | 26 |
 | `alchemy_getAssetTransfers` | 150 |
+
+## Sync Worker CU Usage
+
+### Per-Block Mode (default)
+Each block requires multiple RPC calls:
+- `eth_blockNumber`: 10 CU
+- `eth_getBlockByNumber`: 16 CU  
+- `eth_getLogs`: 75 CU
+- Per matched tx: `eth_getTransactionByHash` (17) + `eth_getTransactionReceipt` (15) = 32 CU
+
+**Total per block (0 matches): ~101 CU**
+
+### Batched Mode (recommended for fast chains)
+Uses single `eth_getLogs` call for multiple blocks:
+- `eth_blockNumber`: 10 CU
+- `eth_getLogs` (covers entire range): 75 CU
+- Per matched tx: 32 CU
+
+**Total per poll cycle (0 matches): ~85 CU regardless of block count**
+
+### Monthly CU Comparison
+
+| Chain | Block Time | Per-Block Mode | Batched Mode | Savings |
+|-------|------------|----------------|--------------|---------|
+| Ethereum | 12s | ~22M CU | ~13M CU | 40% |
+| Base | 2s | ~131M CU | ~13M CU | **90%** |
+| BNB | 0.45s | ~585M CU | ~13M CU | **98%** |
+
+Enable batched mode with `UseBatchedPolling: true` in SyncWorkerConfig.
 
 ## Monitoring
 

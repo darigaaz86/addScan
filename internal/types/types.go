@@ -57,6 +57,8 @@ const (
 	ChainOptimism ChainID = "optimism"
 	// ChainBase represents the Base network
 	ChainBase ChainID = "base"
+	// ChainBNB represents the BNB Chain (BSC)
+	ChainBNB ChainID = "bnb"
 )
 
 // BackfillStatus represents the status of a backfill job

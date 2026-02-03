@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS unified_timeline (
   created_at DateTime DEFAULT now()
 ) ENGINE = ReplacingMergeTree(created_at)
 PARTITION BY toYYYYMM(timestamp)
-ORDER BY (address, timestamp, hash)
+ORDER BY (timestamp, address, hash)
 SETTINGS index_granularity = 8192;
 
 -- Create index for address lookups

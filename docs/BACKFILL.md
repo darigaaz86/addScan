@@ -459,3 +459,88 @@ FROM backfill_jobs
 WHERE address = '0x...'
 ORDER BY started_at DESC;
 ```
+
+
+## Auto Re-queue Strategy
+
+The backfill system includes automatic retry for failed jobs with transient errors.
+
+### Configuration
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Cooldown period | 30 minutes | Wait time after failure before retry |
+| Max auto-retries | 3 | Maximum automatic retry attempts |
+| Check interval | 15 minutes | How often to check for retriable jobs |
+
+### Eligible Errors (Transient)
+
+Jobs with these error patterns are eligible for auto re-queue:
+- `429` - Rate limit exceeded
+- `timeout` - Request timeout
+- `rate limit` - Rate limiting
+- `connection` - Network issues
+- `temporary` - Temporary failures
+
+### Permanent Errors (No Auto-Retry)
+
+Jobs with these errors require manual intervention:
+- `not found` - Resource doesn't exist
+- `invalid address` - Malformed address
+- `unsupported` - Unsupported chain/feature
+- `unauthorized` - API key issues
+
+### Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Auto Re-queue Check (every 15 min)           │
+│                                                                 │
+│  SELECT failed jobs WHERE:                                      │
+│    - retry_count < 3                                            │
+│    - completed_at < NOW() - 30 minutes                          │
+│    - error LIKE '%429%' OR '%timeout%' OR '%rate limit%'...     │
+│                                                                 │
+│  For each eligible job:                                         │
+│    - SET status = 'queued'                                      │
+│    - INCREMENT retry_count                                      │
+│    - CLEAR completed_at                                         │
+│                                                                 │
+│  Jobs with retry_count >= 3 OR permanent errors:                │
+│    - Stay as 'failed'                                           │
+│    - Require manual retry via API                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Manual Retry API
+
+For jobs that exceed auto-retry limits or have permanent errors:
+
+```bash
+# Re-queue all failed jobs for a specific chain
+curl -X POST http://localhost:8080/api/admin/backfill/requeue?chain=bnb
+
+# Re-queue a specific job
+curl -X POST http://localhost:8080/api/admin/backfill/requeue/{jobId}
+
+# Get job statistics
+curl http://localhost:8080/api/admin/backfill/stats
+```
+
+### Cleanup
+
+Old completed and failed jobs are automatically cleaned up:
+
+| Job Status | Retention | Action |
+|------------|-----------|--------|
+| Completed | 7 days | Deleted |
+| Failed (auto-retry exhausted) | 30 days | Deleted |
+
+```sql
+-- Manual cleanup query
+DELETE FROM backfill_jobs 
+WHERE status = 'completed' AND completed_at < NOW() - INTERVAL '7 days';
+
+DELETE FROM backfill_jobs 
+WHERE status = 'failed' AND completed_at < NOW() - INTERVAL '30 days';
+```

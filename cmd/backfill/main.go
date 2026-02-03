@@ -94,7 +94,13 @@ func main() {
 	// Create adapters for each enabled chain
 	for _, chainName := range cfg.Chains.Enabled {
 		chainCfg, ok := cfg.Chains.Chains[chainName]
-		if !ok || chainCfg.RPCPrimary == "" {
+		if !ok {
+			log.Printf("Skipping chain %s: no configuration found", chainName)
+			continue
+		}
+
+		// Check if we have any RPC URLs configured
+		if len(chainCfg.RPCURLs) == 0 && chainCfg.RPCPrimary == "" {
 			log.Printf("Skipping chain %s: no RPC endpoint configured", chainName)
 			continue
 		}
@@ -112,21 +118,39 @@ func main() {
 			chainID = types.ChainOptimism
 		case "base":
 			chainID = types.ChainBase
+		case "bnb":
+			chainID = types.ChainBNB
 		default:
 			log.Printf("Skipping unknown chain: %s", chainName)
 			continue
 		}
 
-		// Create data provider with failover
+		// Create data provider - prefer RPC pool if multiple URLs configured
 		var provider adapter.DataProvider
-		if chainCfg.RPCSecondary != "" {
-			provider, err = adapter.NewRPCProvider(chainCfg.RPCPrimary, chainCfg.RPCSecondary)
+		if len(chainCfg.RPCURLs) > 1 {
+			// Use RPC pool for multiple accounts (failover on 429)
+			pool, err := adapter.NewRPCPool(&adapter.RPCPoolConfig{
+				Endpoints:    chainCfg.RPCURLs,
+				CooldownTime: 60 * time.Second,
+			})
+			if err != nil {
+				log.Printf("Failed to create RPC pool for chain %s: %v", chainName, err)
+				continue
+			}
+			provider = adapter.NewPooledRPCProvider(pool)
+			log.Printf("Chain %s: using RPC pool with %d endpoints", chainName, len(chainCfg.RPCURLs))
 		} else {
-			provider, err = adapter.NewRPCProvider(chainCfg.RPCPrimary, "")
-		}
-		if err != nil {
-			log.Printf("Failed to create provider for chain %s: %v", chainName, err)
-			continue
+			// Single endpoint - use legacy provider
+			endpoint := chainCfg.RPCPrimary
+			if len(chainCfg.RPCURLs) == 1 {
+				endpoint = chainCfg.RPCURLs[0]
+			}
+			provider, err = adapter.NewRPCProvider(endpoint, chainCfg.RPCSecondary)
+			if err != nil {
+				log.Printf("Failed to create provider for chain %s: %v", chainName, err)
+				continue
+			}
+			log.Printf("Chain %s: using single RPC endpoint", chainName)
 		}
 
 		// Create chain adapter
@@ -154,6 +178,17 @@ func main() {
 		rateController,
 	)
 
+	// Reset stale "in_progress" jobs on startup
+	// These are jobs that were being processed when the worker crashed
+	resetCtx, resetCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	staleCount, err := backfillRepo.ResetStaleInProgressJobs(resetCtx, 5*time.Minute)
+	resetCancel()
+	if err != nil {
+		log.Printf("Warning: failed to reset stale jobs: %v", err)
+	} else if staleCount > 0 {
+		log.Printf("Reset %d stale in_progress jobs to queued", staleCount)
+	}
+
 	log.Printf("Backfill worker initialized with %d chain adapters", len(chainAdapters))
 	if cfg.Etherscan.APIKey != "" {
 		log.Println("Etherscan API enabled for complete transaction history (including approve, contract calls)")
@@ -166,6 +201,9 @@ func main() {
 	// Set up graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start auto re-queue background job
+	backfillService.StartAutoRequeue(ctx)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -180,6 +218,10 @@ func main() {
 	// Wait for shutdown signal
 	<-sigCh
 	log.Println("Shutdown signal received, stopping backfill worker...")
+
+	// Stop auto re-queue
+	backfillService.StopAutoRequeue()
+
 	cancel()
 
 	// Wait for processing loop to finish

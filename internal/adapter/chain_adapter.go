@@ -29,6 +29,12 @@ type ChainAdapter interface {
 	// Returns error if provider request fails
 	FetchTransactionsForBlock(ctx context.Context, blockNum uint64, addresses []string) ([]*types.NormalizedTransaction, error)
 
+	// FetchTransactionsForBlockRange retrieves transactions for tracked addresses across a block range
+	// Uses batched eth_getLogs for efficiency - single RPC call covers multiple blocks
+	// This is much more CU-efficient for fast chains like Base and BNB
+	// Returns error if provider request fails
+	FetchTransactionsForBlockRange(ctx context.Context, fromBlock, toBlock uint64, addresses []string) ([]*types.NormalizedTransaction, error)
+
 	// GetCurrentBlock returns the current block number for the chain
 	// Returns error if provider request fails
 	GetCurrentBlock(ctx context.Context) (uint64, error)

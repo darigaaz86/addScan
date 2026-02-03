@@ -74,7 +74,15 @@ func main() {
 	// Create adapters for each enabled chain
 	for _, chainName := range cfg.Chains.Enabled {
 		chainCfg, ok := cfg.Chains.Chains[chainName]
-		if !ok || chainCfg.RPCPrimary == "" {
+		if !ok {
+			logger.WithFields(map[string]interface{}{
+				"chain": chainName,
+			}).Warn("Skipping chain: no configuration found")
+			continue
+		}
+
+		// Check if we have any RPC URLs configured
+		if len(chainCfg.RPCURLs) == 0 && chainCfg.RPCPrimary == "" {
 			logger.WithFields(map[string]interface{}{
 				"chain": chainName,
 			}).Warn("Skipping chain: no RPC endpoint configured")
@@ -94,6 +102,8 @@ func main() {
 			chainID = types.ChainOptimism
 		case "base":
 			chainID = types.ChainBase
+		case "bnb":
+			chainID = types.ChainBNB
 		default:
 			logger.WithFields(map[string]interface{}{
 				"chain": chainName,
@@ -101,18 +111,41 @@ func main() {
 			continue
 		}
 
-		// Create data provider with failover
+		// Create data provider - prefer RPC pool if multiple URLs configured
 		var provider adapter.DataProvider
-		if chainCfg.RPCSecondary != "" {
-			provider, err = adapter.NewRPCProvider(chainCfg.RPCPrimary, chainCfg.RPCSecondary)
+		if len(chainCfg.RPCURLs) > 1 {
+			// Use RPC pool for multiple accounts (failover on 429)
+			pool, err := adapter.NewRPCPool(&adapter.RPCPoolConfig{
+				Endpoints:    chainCfg.RPCURLs,
+				CooldownTime: 60 * time.Second,
+			})
+			if err != nil {
+				logger.WithError(err).WithFields(map[string]interface{}{
+					"chain": chainName,
+				}).Warn("Failed to create RPC pool for chain")
+				continue
+			}
+			provider = adapter.NewPooledRPCProvider(pool)
+			logger.WithFields(map[string]interface{}{
+				"chain":     chainName,
+				"endpoints": len(chainCfg.RPCURLs),
+			}).Info("Chain using RPC pool")
 		} else {
-			provider, err = adapter.NewRPCProvider(chainCfg.RPCPrimary, "")
-		}
-		if err != nil {
-			logger.WithError(err).WithFields(map[string]interface{}{
+			// Single endpoint - use legacy provider
+			endpoint := chainCfg.RPCPrimary
+			if len(chainCfg.RPCURLs) == 1 {
+				endpoint = chainCfg.RPCURLs[0]
+			}
+			provider, err = adapter.NewRPCProvider(endpoint, chainCfg.RPCSecondary)
+			if err != nil {
+				logger.WithError(err).WithFields(map[string]interface{}{
+					"chain": chainName,
+				}).Warn("Failed to create provider for chain")
+				continue
+			}
+			logger.WithFields(map[string]interface{}{
 				"chain": chainName,
-			}).Warn("Failed to create provider for chain")
-			continue
+			}).Info("Chain using single RPC endpoint")
 		}
 
 		// Create chain adapter
@@ -127,7 +160,6 @@ func main() {
 		chainAdapters[chainID] = chainAdapter
 		logger.WithFields(map[string]interface{}{
 			"chain": chainName,
-			"rpc":   chainCfg.RPCPrimary,
 		}).Info("Chain adapter initialized")
 	}
 
@@ -191,6 +223,9 @@ func main() {
 		portfolioService,
 	)
 
+	// Goldsky repository for real-time blockchain data
+	goldskyRepo := storage.NewGoldskyRepository(clickhouse)
+
 	logger.Info("Services initialized")
 
 	// Create server configuration
@@ -206,7 +241,7 @@ func main() {
 		PremiumTierRPS:  cfg.RateLimit.PremiumTier,
 	}
 
-	server := api.NewServer(serverConfig, addressService, portfolioService, queryService, snapshotService, userRepo)
+	server := api.NewServer(serverConfig, addressService, portfolioService, queryService, snapshotService, userRepo, goldskyRepo)
 
 	// Start server in a goroutine
 	go func() {

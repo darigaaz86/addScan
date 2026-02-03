@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/address-scanner/internal/adapter"
@@ -21,6 +22,7 @@ type BackfillService struct {
 	chainAdapters   map[types.ChainID]adapter.ChainAdapter
 	etherscanClient *adapter.EtherscanClient
 	rateController  *ratelimit.BackfillRateController
+	stopAutoRequeue chan struct{}
 }
 
 // NewBackfillService creates a new backfill service
@@ -138,8 +140,8 @@ func (s *BackfillService) ProcessNextJob(ctx context.Context) error {
 
 	job := jobs[0]
 
-	log.Printf("[Backfill] Processing job %s for address %s on chain %s (tier: %s)",
-		job.JobID, job.Address, job.Chain, job.Tier)
+	log.Printf("[Backfill] Processing job %s for address %s on chain %s (tier: %s, retry: %d)",
+		job.JobID, job.Address, job.Chain, job.Tier, job.RetryCount)
 
 	job.Status = string(types.BackfillStatusInProgress)
 	job.StartedAt = time.Now()
@@ -148,9 +150,23 @@ func (s *BackfillService) ProcessNextJob(ctx context.Context) error {
 	}
 
 	if err := s.processBackfill(ctx, job); err != nil {
-		job.Status = string(types.BackfillStatusFailed)
-		job.CompletedAt = timePtr(time.Now())
-		job.Error = stringPtr(err.Error())
+		job.RetryCount++
+
+		// Auto-retry up to 3 times, then mark as failed
+		const maxRetries = 3
+		if job.RetryCount < maxRetries {
+			job.Status = string(types.BackfillStatusQueued) // Re-queue for retry
+			job.Error = stringPtr(fmt.Sprintf("attempt %d failed: %s", job.RetryCount, err.Error()))
+			log.Printf("[Backfill] Job %s failed (attempt %d/%d), re-queuing: %v",
+				job.JobID, job.RetryCount, maxRetries, err)
+		} else {
+			job.Status = string(types.BackfillStatusFailed)
+			job.CompletedAt = timePtr(time.Now())
+			job.Error = stringPtr(fmt.Sprintf("failed after %d attempts: %s", job.RetryCount, err.Error()))
+			log.Printf("[Backfill] Job %s failed permanently after %d attempts: %v",
+				job.JobID, job.RetryCount, err)
+		}
+
 		s.backfillRepo.Update(ctx, job)
 		return fmt.Errorf("backfill failed: %w", err)
 	}
@@ -241,42 +257,69 @@ func (s *BackfillService) fetchHistoricalTransactions(
 	// Fetch from Etherscan (complete transaction list - all 5 types)
 	// This is the source of truth as it returns each transfer separately
 	var transactions []*types.NormalizedTransaction
+	var etherscanErr error
+
 	if s.etherscanClient != nil {
-		var err error
-		transactions, err = s.etherscanClient.FetchAllTransactions(ctx, address, chain)
-		if err != nil {
-			log.Printf("[Backfill] Warning: Etherscan fetch failed: %v", err)
-			transactions = []*types.NormalizedTransaction{}
+		transactions, etherscanErr = s.etherscanClient.FetchAllTransactions(ctx, address, chain)
+		if etherscanErr != nil {
+			log.Printf("[Backfill] Warning: Etherscan fetch failed: %v", etherscanErr)
 		} else {
 			log.Printf("[Backfill] Etherscan returned %d transactions for %s", len(transactions), address)
 		}
 	}
 
-	// If Etherscan failed or returned nothing, fall back to Alchemy
-	if len(transactions) == 0 {
-		// Wait for CU budget before making Alchemy RPC call
-		// alchemy_getAssetTransfers costs 150 CU
-		if s.rateController != nil {
-			log.Printf("[Backfill] Waiting for CU budget before Alchemy call...")
-			if err := s.rateController.WaitForBudget(ctx, ratelimit.CostAlchemyGetAssetTransfers); err != nil {
-				return nil, fmt.Errorf("rate limit wait cancelled: %w", err)
-			}
-		}
-
-		alchemyTxs, err := chainAdapter.FetchTransactionHistory(ctx, address, limit)
-		if err != nil {
-			log.Printf("[Backfill] Warning: Alchemy fetch failed: %v", err)
-			// Record failure for backoff if rate controller is configured
+	// Only fall back to Alchemy if Etherscan FAILED (not just returned 0 results)
+	// 0 results from Etherscan is valid - address may have no transactions on this chain
+	if etherscanErr != nil || s.etherscanClient == nil {
+		// Retry loop with exponential backoff for 429 errors
+		maxRetries := 3
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			// Wait for CU budget before making Alchemy RPC call
+			// alchemy_getAssetTransfers costs 300 CU (2 calls: outgoing + incoming)
 			if s.rateController != nil {
-				s.rateController.RecordFailure()
+				log.Printf("[Backfill] Waiting for CU budget before Alchemy call (attempt %d/%d)...", attempt+1, maxRetries)
+				if err := s.rateController.WaitForBudget(ctx, ratelimit.CostAlchemyGetAssetTransfers); err != nil {
+					return nil, fmt.Errorf("rate limit wait cancelled: %w", err)
+				}
 			}
-		} else {
+
+			alchemyTxs, err := chainAdapter.FetchTransactionHistory(ctx, address, limit)
+			if err != nil {
+				// Check if it's a rate limit error (429)
+				errStr := err.Error()
+				is429 := strings.Contains(errStr, "429") || strings.Contains(errStr, "rate limit") || strings.Contains(errStr, "too many requests")
+
+				if is429 && attempt < maxRetries-1 {
+					// Record failure for backoff
+					if s.rateController != nil {
+						s.rateController.RecordFailure()
+					}
+					// Exponential backoff: 2s, 4s, 8s
+					backoffDuration := time.Duration(2<<attempt) * time.Second
+					log.Printf("[Backfill] Rate limited (429), backing off for %v before retry...", backoffDuration)
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(backoffDuration):
+						continue
+					}
+				}
+
+				log.Printf("[Backfill] Alchemy fetch failed after %d attempts: %v", attempt+1, err)
+				// Record failure for backoff if rate controller is configured
+				if s.rateController != nil {
+					s.rateController.RecordFailure()
+				}
+				break
+			}
+
 			log.Printf("[Backfill] Alchemy returned %d transactions for %s", len(alchemyTxs), address)
 			transactions = alchemyTxs
 			// Record success to reset backoff
 			if s.rateController != nil {
 				s.rateController.RecordSuccess()
 			}
+			break
 		}
 	}
 
@@ -294,4 +337,97 @@ func timePtr(t time.Time) *time.Time {
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// Auto re-queue configuration
+const (
+	autoRequeueInterval   = 15 * time.Minute // Check every 15 minutes
+	autoRequeueCooldown   = 30 * time.Minute // Wait 30 min after failure before retry
+	autoRequeueMaxRetries = 3                // Max auto-retry attempts
+)
+
+// StartAutoRequeue starts the background goroutine that automatically re-queues
+// failed jobs with transient errors. Call StopAutoRequeue to stop it.
+func (s *BackfillService) StartAutoRequeue(ctx context.Context) {
+	s.stopAutoRequeue = make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(autoRequeueInterval)
+		defer ticker.Stop()
+
+		log.Printf("[Backfill] Auto re-queue started (interval: %v, cooldown: %v, max retries: %d)",
+			autoRequeueInterval, autoRequeueCooldown, autoRequeueMaxRetries)
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("[Backfill] Auto re-queue stopped (context cancelled)")
+				return
+			case <-s.stopAutoRequeue:
+				log.Printf("[Backfill] Auto re-queue stopped")
+				return
+			case <-ticker.C:
+				s.runAutoRequeue(ctx)
+			}
+		}
+	}()
+}
+
+// StopAutoRequeue stops the auto re-queue background goroutine
+func (s *BackfillService) StopAutoRequeue() {
+	if s.stopAutoRequeue != nil {
+		close(s.stopAutoRequeue)
+	}
+}
+
+// runAutoRequeue checks for and re-queues eligible failed jobs
+func (s *BackfillService) runAutoRequeue(ctx context.Context) {
+	count, err := s.backfillRepo.RequeueTransientFailures(ctx, autoRequeueMaxRetries, autoRequeueCooldown)
+	if err != nil {
+		log.Printf("[Backfill] Auto re-queue error: %v", err)
+		return
+	}
+
+	if count > 0 {
+		log.Printf("[Backfill] Auto re-queued %d failed jobs with transient errors", count)
+	}
+}
+
+// RequeueFailedJobs manually re-queues all failed jobs for a specific chain
+// This resets retry_count to 0, allowing full retry attempts
+func (s *BackfillService) RequeueFailedJobs(ctx context.Context, chain string) (int64, error) {
+	count, err := s.backfillRepo.RequeueFailedJobs(ctx, chain)
+	if err != nil {
+		return 0, fmt.Errorf("failed to re-queue jobs: %w", err)
+	}
+
+	if count > 0 {
+		log.Printf("[Backfill] Manually re-queued %d failed jobs for chain: %s", count, chain)
+	}
+
+	return count, nil
+}
+
+// GetJobStats returns job counts by status
+func (s *BackfillService) GetJobStats(ctx context.Context) (map[string]int64, error) {
+	return s.backfillRepo.GetJobStats(ctx)
+}
+
+// CleanupOldJobs deletes old completed and failed jobs
+func (s *BackfillService) CleanupOldJobs(ctx context.Context) (completed int64, failed int64, err error) {
+	completed, err = s.backfillRepo.DeleteCompletedJobs(ctx, 7*24*time.Hour) // 7 days
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to cleanup completed jobs: %w", err)
+	}
+
+	failed, err = s.backfillRepo.DeleteOldFailedJobs(ctx, 30*24*time.Hour) // 30 days
+	if err != nil {
+		return completed, 0, fmt.Errorf("failed to cleanup failed jobs: %w", err)
+	}
+
+	if completed > 0 || failed > 0 {
+		log.Printf("[Backfill] Cleanup: deleted %d completed jobs, %d failed jobs", completed, failed)
+	}
+
+	return completed, failed, nil
 }

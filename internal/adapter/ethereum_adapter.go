@@ -620,6 +620,221 @@ func (a *EthereumAdapter) FetchTransactionsForBlock(ctx context.Context, blockNu
 	return transactions, nil
 }
 
+// FetchTransactionsForBlockRange retrieves transactions for tracked addresses across a block range
+// Uses batched eth_getLogs for efficiency - single RPC call covers multiple blocks
+// This is much more CU-efficient for fast chains like Base and BNB
+// Cost: ~75 CU per call regardless of block range (up to 2000 blocks)
+func (a *EthereumAdapter) FetchTransactionsForBlockRange(ctx context.Context, fromBlock, toBlock uint64, addresses []string) ([]*types.NormalizedTransaction, error) {
+	if len(addresses) == 0 {
+		return []*types.NormalizedTransaction{}, nil
+	}
+
+	// Build address lookup map for O(1) checks
+	addressMap := make(map[string]bool)
+	addressList := make([]common.Address, 0, len(addresses))
+	for _, addr := range addresses {
+		normalizedAddr := strings.ToLower(strings.TrimSpace(addr))
+		if !strings.HasPrefix(normalizedAddr, "0x") {
+			normalizedAddr = "0x" + normalizedAddr
+		}
+		if a.ValidateAddress(normalizedAddr) {
+			addressMap[normalizedAddr] = true
+			addressList = append(addressList, common.HexToAddress(normalizedAddr))
+		}
+	}
+
+	if len(addressMap) == 0 {
+		return []*types.NormalizedTransaction{}, nil
+	}
+
+	fromBlockBig := new(big.Int).SetUint64(fromBlock)
+	toBlockBig := new(big.Int).SetUint64(toBlock)
+
+	log.Printf("[Adapter:%s] RPC Call: eth_getLogs for blocks %d-%d (%d blocks, %d addresses)",
+		a.chainID, fromBlock, toBlock, toBlock-fromBlock+1, len(addressList))
+
+	// Use a map to track matched tx hashes (avoid duplicates)
+	matchedTxMap := make(map[common.Hash]uint64) // hash -> block number
+	nativeMatches := 0
+	tokenMatches := 0
+
+	// 1. Fetch logs for token transfers across the block range
+	// ERC20/721 Transfer event: Transfer(address indexed from, address indexed to, ...)
+	// ERC1155 TransferSingle/TransferBatch events
+	transferEventSig := common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+	transferSingleSig := common.HexToHash("0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62")
+	transferBatchSig := common.HexToHash("0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb")
+
+	filterQuery := ethereum.FilterQuery{
+		FromBlock: fromBlockBig,
+		ToBlock:   toBlockBig,
+		Topics: [][]common.Hash{
+			{transferEventSig, transferSingleSig, transferBatchSig},
+		},
+	}
+
+	var logs []ethtypes.Log
+	var err error
+	if a.rateLimitClient != nil {
+		logs, err = a.rateLimitClient.FilterLogs(ctx, filterQuery)
+	} else {
+		logs, err = a.client.FilterLogs(ctx, filterQuery)
+	}
+	if err != nil {
+		// Check if we should failover
+		if a.shouldFailover(err) {
+			if failErr := a.provider.Failover(); failErr == nil {
+				if rpcURL, urlErr := a.provider.GetCurrentURL(); urlErr == nil {
+					if client, dialErr := ethclient.Dial(rpcURL); dialErr == nil {
+						a.client = client
+						return a.FetchTransactionsForBlockRange(ctx, fromBlock, toBlock, addresses)
+					}
+				}
+			}
+		}
+		return nil, NewAdapterError(a.chainID, "FetchTransactionsForBlockRange", err, map[string]interface{}{
+			"fromBlock": fromBlock,
+			"toBlock":   toBlock,
+			"error":     "failed to fetch logs",
+		})
+	}
+
+	// Check each log for matching addresses
+	for _, logEntry := range logs {
+		// ERC20/721 Transfer: topics[1] = from, topics[2] = to
+		if logEntry.Topics[0] == transferEventSig && len(logEntry.Topics) >= 3 {
+			from := strings.ToLower(common.BytesToAddress(logEntry.Topics[1].Bytes()).Hex())
+			to := strings.ToLower(common.BytesToAddress(logEntry.Topics[2].Bytes()).Hex())
+			if addressMap[from] || addressMap[to] {
+				if _, exists := matchedTxMap[logEntry.TxHash]; !exists {
+					matchedTxMap[logEntry.TxHash] = logEntry.BlockNumber
+					tokenMatches++
+				}
+			}
+		}
+		// ERC1155 TransferSingle: topics[2] = from, topics[3] = to
+		if logEntry.Topics[0] == transferSingleSig && len(logEntry.Topics) >= 4 {
+			from := strings.ToLower(common.BytesToAddress(logEntry.Topics[2].Bytes()).Hex())
+			to := strings.ToLower(common.BytesToAddress(logEntry.Topics[3].Bytes()).Hex())
+			if addressMap[from] || addressMap[to] {
+				if _, exists := matchedTxMap[logEntry.TxHash]; !exists {
+					matchedTxMap[logEntry.TxHash] = logEntry.BlockNumber
+					tokenMatches++
+				}
+			}
+		}
+		// ERC1155 TransferBatch: topics[2] = from, topics[3] = to
+		if logEntry.Topics[0] == transferBatchSig && len(logEntry.Topics) >= 4 {
+			from := strings.ToLower(common.BytesToAddress(logEntry.Topics[2].Bytes()).Hex())
+			to := strings.ToLower(common.BytesToAddress(logEntry.Topics[3].Bytes()).Hex())
+			if addressMap[from] || addressMap[to] {
+				if _, exists := matchedTxMap[logEntry.TxHash]; !exists {
+					matchedTxMap[logEntry.TxHash] = logEntry.BlockNumber
+					tokenMatches++
+				}
+			}
+		}
+	}
+
+	// 2. For native transfers, we need to check blocks individually
+	// Use raw JSON-RPC to avoid transaction type parsing issues (e.g., EIP-4844 blob txs)
+	// This extracts only from/to/hash without full transaction unmarshaling
+	rpcURL, _ := a.provider.GetCurrentURL()
+	for blockNum := fromBlock; blockNum <= toBlock; blockNum++ {
+		txList, err := a.fetchBlockTransactionsRaw(ctx, rpcURL, blockNum)
+		if err != nil {
+			log.Printf("[Adapter:%s] Warning: failed to fetch block %d txs: %v", a.chainID, blockNum, err)
+			continue
+		}
+
+		// Scan transactions for native transfers
+		for _, rawTx := range txList {
+			txHash := common.HexToHash(rawTx.Hash)
+
+			// Skip if already matched via logs
+			if _, exists := matchedTxMap[txHash]; exists {
+				continue
+			}
+
+			// Check if 'to' address matches
+			if rawTx.To != "" {
+				toAddr := strings.ToLower(rawTx.To)
+				if addressMap[toAddr] {
+					matchedTxMap[txHash] = blockNum
+					nativeMatches++
+					continue
+				}
+			}
+
+			// Check if 'from' address matches
+			fromAddr := strings.ToLower(rawTx.From)
+			if addressMap[fromAddr] {
+				matchedTxMap[txHash] = blockNum
+				nativeMatches++
+			}
+		}
+	}
+
+	log.Printf("[Adapter:%s] Blocks %d-%d: scanned %d logs, found %d native + %d token matches",
+		a.chainID, fromBlock, toBlock, len(logs), nativeMatches, tokenMatches)
+
+	if len(matchedTxMap) == 0 {
+		return []*types.NormalizedTransaction{}, nil
+	}
+
+	// Fetch receipts and normalize matched transactions
+	// Group by block to minimize block fetches
+	blockCache := make(map[uint64]*ethtypes.Block)
+	var transactions []*types.NormalizedTransaction
+
+	for txHash, blockNum := range matchedTxMap {
+		var tx *ethtypes.Transaction
+		var isPending bool
+		if a.rateLimitClient != nil {
+			tx, isPending, err = a.rateLimitClient.TransactionByHash(ctx, txHash)
+		} else {
+			tx, isPending, err = a.client.TransactionByHash(ctx, txHash)
+		}
+		if err != nil || isPending {
+			continue
+		}
+
+		var receipt *ethtypes.Receipt
+		if a.rateLimitClient != nil {
+			receipt, err = a.rateLimitClient.TransactionReceipt(ctx, txHash)
+		} else {
+			receipt, err = a.client.TransactionReceipt(ctx, txHash)
+		}
+		if err != nil {
+			continue
+		}
+
+		// Get block from cache or fetch
+		block, exists := blockCache[blockNum]
+		if !exists {
+			blockBig := new(big.Int).SetUint64(blockNum)
+			if a.rateLimitClient != nil {
+				block, err = a.rateLimitClient.BlockByNumber(ctx, blockBig)
+			} else {
+				block, err = a.client.BlockByNumber(ctx, blockBig)
+			}
+			if err != nil {
+				continue
+			}
+			blockCache[blockNum] = block
+		}
+
+		normalized, err := a.NormalizeTransactionWithReceipt(tx, receipt, block)
+		if err != nil {
+			continue
+		}
+
+		transactions = append(transactions, normalized)
+	}
+
+	return transactions, nil
+}
+
 // GetCurrentBlock returns the current block number for the chain
 func (a *EthereumAdapter) GetCurrentBlock(ctx context.Context) (uint64, error) {
 	log.Printf("[Adapter:%s] RPC Call: BlockNumber (getting current block)", a.chainID)
@@ -877,15 +1092,15 @@ func FetchAlchemyAssetTransfers(ctx context.Context, rpcURL string, address stri
 	// Fetch outgoing transfers (fromAddress)
 	outgoing, err := fetchAlchemyTransfers(ctx, rpcURL, address, "fromAddress", maxCount/2, chainID)
 	if err != nil {
-		log.Printf("[Alchemy] Warning: failed to fetch outgoing transfers: %v", err)
-		outgoing = []*types.NormalizedTransaction{}
+		// Propagate rate limit errors so caller can handle failover
+		return nil, fmt.Errorf("failed to fetch outgoing transfers: %w", err)
 	}
 
 	// Fetch incoming transfers (toAddress)
 	incoming, err := fetchAlchemyTransfers(ctx, rpcURL, address, "toAddress", maxCount/2, chainID)
 	if err != nil {
-		log.Printf("[Alchemy] Warning: failed to fetch incoming transfers: %v", err)
-		incoming = []*types.NormalizedTransaction{}
+		// Propagate rate limit errors so caller can handle failover
+		return nil, fmt.Errorf("failed to fetch incoming transfers: %w", err)
 	}
 
 	// Merge and deduplicate by transaction hash
@@ -1224,4 +1439,77 @@ func convertAlchemyTransferToTransaction(transfer AlchemyAssetTransfer, chainID 
 	}
 
 	return tx
+}
+
+// rawBlockTransaction represents minimal transaction data from raw JSON-RPC response
+// This avoids full transaction type parsing which can fail for newer tx types (e.g., EIP-4844)
+type rawBlockTransaction struct {
+	Hash string `json:"hash"`
+	From string `json:"from"`
+	To   string `json:"to"` // Can be empty for contract creation
+}
+
+// fetchBlockTransactionsRaw fetches block transactions using raw JSON-RPC
+// This extracts only from/to/hash without full transaction unmarshaling
+// Avoids "transaction type not supported" errors for EIP-4844 blob transactions
+func (a *EthereumAdapter) fetchBlockTransactionsRaw(ctx context.Context, rpcURL string, blockNum uint64) ([]rawBlockTransaction, error) {
+	// Build JSON-RPC request for eth_getBlockByNumber with full transactions
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "eth_getBlockByNumber",
+		"params":  []interface{}{fmt.Sprintf("0x%x", blockNum), true}, // true = include full txs
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	// Parse response - only extract the fields we need
+	var rpcResponse struct {
+		Result *struct {
+			Transactions []rawBlockTransaction `json:"transactions"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &rpcResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if rpcResponse.Error != nil {
+		return nil, fmt.Errorf("RPC error %d: %s", rpcResponse.Error.Code, rpcResponse.Error.Message)
+	}
+
+	if rpcResponse.Result == nil {
+		return nil, fmt.Errorf("block not found")
+	}
+
+	return rpcResponse.Result.Transactions, nil
 }

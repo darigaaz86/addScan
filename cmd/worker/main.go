@@ -93,11 +93,18 @@ func main() {
 	// Initialize chain adapters
 	log.Println("Initializing chain adapters...")
 	chainAdapters := make(map[types.ChainID]adapter.ChainAdapter)
+	chainConfigs := make(map[types.ChainID]config.ChainConfig) // Store configs for later use
 
 	// Create adapters for each enabled chain
 	for _, chainName := range cfg.Chains.Enabled {
 		chainCfg, ok := cfg.Chains.Chains[chainName]
-		if !ok || chainCfg.RPCPrimary == "" {
+		if !ok {
+			log.Printf("Skipping chain %s: no configuration found", chainName)
+			continue
+		}
+
+		// Check if we have any RPC URLs configured
+		if len(chainCfg.RPCURLs) == 0 && chainCfg.RPCPrimary == "" {
 			log.Printf("Skipping chain %s: no RPC endpoint configured", chainName)
 			continue
 		}
@@ -115,26 +122,39 @@ func main() {
 			chainID = types.ChainOptimism
 		case "base":
 			chainID = types.ChainBase
+		case "bnb":
+			chainID = types.ChainBNB
 		default:
 			log.Printf("Skipping unknown chain: %s", chainName)
 			continue
 		}
 
-		// Create data provider with failover
-		endpoints := []string{chainCfg.RPCPrimary}
-		if chainCfg.RPCSecondary != "" {
-			endpoints = append(endpoints, chainCfg.RPCSecondary)
-		}
-
+		// Create data provider - prefer RPC pool if multiple URLs configured
 		var provider adapter.DataProvider
-		if len(endpoints) == 1 {
-			provider, err = adapter.NewRPCProvider(endpoints[0], "")
+		if len(chainCfg.RPCURLs) > 1 {
+			// Use RPC pool for multiple accounts (failover on 429)
+			pool, err := adapter.NewRPCPool(&adapter.RPCPoolConfig{
+				Endpoints:    chainCfg.RPCURLs,
+				CooldownTime: 60 * time.Second,
+			})
+			if err != nil {
+				log.Printf("Failed to create RPC pool for chain %s: %v", chainName, err)
+				continue
+			}
+			provider = adapter.NewPooledRPCProvider(pool)
+			log.Printf("Chain %s: using RPC pool with %d endpoints", chainName, len(chainCfg.RPCURLs))
 		} else {
-			provider, err = adapter.NewRPCProvider(endpoints[0], endpoints[1])
-		}
-		if err != nil {
-			log.Printf("Failed to create provider for chain %s: %v", chainName, err)
-			continue
+			// Single endpoint - use legacy provider
+			endpoint := chainCfg.RPCPrimary
+			if len(chainCfg.RPCURLs) == 1 {
+				endpoint = chainCfg.RPCURLs[0]
+			}
+			provider, err = adapter.NewRPCProvider(endpoint, chainCfg.RPCSecondary)
+			if err != nil {
+				log.Printf("Failed to create provider for chain %s: %v", chainName, err)
+				continue
+			}
+			log.Printf("Chain %s: using single RPC endpoint", chainName)
 		}
 
 		// Create chain adapter
@@ -145,7 +165,8 @@ func main() {
 		}
 
 		chainAdapters[chainID] = chainAdapter
-		log.Printf("Chain adapter initialized: %s (RPC: %s)", chainName, chainCfg.RPCPrimary)
+		chainConfigs[chainID] = chainCfg
+		log.Printf("Chain adapter initialized: %s", chainName)
 	}
 
 	if len(chainAdapters) == 0 {
@@ -158,27 +179,9 @@ func main() {
 	workers := make([]*worker.SyncWorker, 0, len(chainAdapters))
 
 	for chainID, chainAdapter := range chainAdapters {
-		// Get poll interval for this chain
-		var pollInterval time.Duration
-		for name, chainCfg := range cfg.Chains.Chains {
-			var cid types.ChainID
-			switch name {
-			case "ethereum":
-				cid = types.ChainEthereum
-			case "polygon":
-				cid = types.ChainPolygon
-			case "arbitrum":
-				cid = types.ChainArbitrum
-			case "optimism":
-				cid = types.ChainOptimism
-			case "base":
-				cid = types.ChainBase
-			}
-			if cid == chainID {
-				pollInterval = chainCfg.PollInterval
-				break
-			}
-		}
+		// Get config for this chain
+		chainCfg := chainConfigs[chainID]
+		pollInterval := chainCfg.PollInterval
 		if pollInterval == 0 {
 			pollInterval = 15 * time.Second
 		}
@@ -194,10 +197,14 @@ func main() {
 			Cache:             redis,
 			PollInterval:      pollInterval,
 			MaxBlocksPerPoll:  cfg.Sync.MaxBlocksPerPoll,
-			UseTierPriority:   true, // Enable tier-based priority
+			MaxBlocksPerBatch: cfg.Sync.MaxBlocksPerBatch, // Alchemy free tier: 10 blocks per eth_getLogs
+			UseTierPriority:   true,                       // Enable tier-based priority
+			UseBatchedPolling: chainCfg.UseBatchedPolling, // Use batched eth_getLogs for CU efficiency
 			RateLimitTracker:  rateLimitTracker,
 			RateLimitRegistry: rateLimitRegistry,
 		}
+
+		log.Printf("Chain %s: batched polling = %v", chainID, chainCfg.UseBatchedPolling)
 
 		syncWorker, err := worker.NewSyncWorker(workerCfg)
 		if err != nil {

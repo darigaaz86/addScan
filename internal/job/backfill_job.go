@@ -114,6 +114,7 @@ func NewBackfillJobServiceWithEtherscan(
 }
 
 // Execute starts backfill jobs for an address (one job per chain)
+// Jobs are queued in the database and processed by the backfill worker
 func (s *BackfillJobService) Execute(ctx context.Context, input *BackfillJobInput) (*BackfillResult, error) {
 	priority := 0
 	if input.Priority != nil {
@@ -121,14 +122,15 @@ func (s *BackfillJobService) Execute(ctx context.Context, input *BackfillJobInpu
 	}
 
 	var jobIDs []string
+	var jobs []*models.BackfillJobRecord
 	startedAt := time.Now()
 
-	// Create one job per chain
+	// Create job records for batch insert
 	for _, chain := range input.Chains {
 		jobID := uuid.New().String()
 		jobIDs = append(jobIDs, jobID)
 
-		jobRecord := &models.BackfillJobRecord{
+		jobs = append(jobs, &models.BackfillJobRecord{
 			JobID:               jobID,
 			Address:             input.Address,
 			Chain:               chain,
@@ -140,20 +142,20 @@ func (s *BackfillJobService) Execute(ctx context.Context, input *BackfillJobInpu
 			CompletedAt:         nil,
 			Error:               nil,
 			RetryCount:          0,
-		}
+		})
+	}
 
-		if err := s.jobRepo.Create(ctx, jobRecord); err != nil {
-			return nil, fmt.Errorf("failed to create backfill job for chain %s: %w", chain, err)
-		}
-
-		// Start backfill asynchronously
-		go s.executeBackfill(context.Background(), jobRecord)
+	// Batch insert all jobs in a single transaction
+	if err := s.jobRepo.BatchCreate(ctx, jobs); err != nil {
+		return nil, fmt.Errorf("failed to create backfill jobs: %w", err)
 	}
 
 	firstJobID := ""
 	if len(jobIDs) > 0 {
 		firstJobID = jobIDs[0]
 	}
+
+	log.Printf("[BackfillJob] Queued %d jobs for address %s (chains: %v)", len(jobIDs), input.Address, input.Chains)
 
 	return &BackfillResult{
 		JobID:               firstJobID,
@@ -276,25 +278,32 @@ func (s *BackfillJobService) fetchTransactionsForChain(
 	limit int64,
 ) ([]*types.NormalizedTransaction, error) {
 	var transactions []*types.NormalizedTransaction
+	var etherscanErr error
 
 	// Try Etherscan first (provides complete data: gas, methodId, funcName)
 	if s.etherscanClient != nil {
-		log.Printf("[BackfillJob] Fetching from Etherscan for %s (limit: %d)", address, limit)
+		log.Printf("[BackfillJob] Fetching from Etherscan for %s on chain %s (limit: %d)", address, chainAdapter.GetChainID(), limit)
 		txs, err := s.etherscanClient.FetchAllTransactions(ctx, address, chainAdapter.GetChainID())
 		if err != nil {
-			log.Printf("[BackfillJob] Warning: Etherscan fetch failed: %v, falling back to Alchemy", err)
+			etherscanErr = err
+			log.Printf("[BackfillJob] Warning: Etherscan fetch failed for chain %s: %v, will try fallback", chainAdapter.GetChainID(), err)
 		} else {
-			log.Printf("[BackfillJob] Etherscan returned %d transactions for %s", len(txs), address)
+			log.Printf("[BackfillJob] Etherscan returned %d transactions for %s on chain %s", len(txs), address, chainAdapter.GetChainID())
 			transactions = txs
 		}
 	}
 
-	// Fall back to Alchemy if Etherscan failed or not configured
-	if len(transactions) == 0 {
-		log.Printf("[BackfillJob] Fetching from Alchemy for %s (limit: %d)", address, limit)
+	// Fall back to Alchemy only if Etherscan failed (not just returned 0 results)
+	// Empty results from Etherscan is valid - address may have no transactions
+	if etherscanErr != nil || s.etherscanClient == nil {
+		log.Printf("[BackfillJob] Fetching from Alchemy for %s on chain %s (limit: %d)", address, chainAdapter.GetChainID(), limit)
 		txs, err := s.fetchFromAlchemyWithRetry(ctx, chainAdapter, address, limit)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch transactions: %w", err)
+			// If both Etherscan and Alchemy failed, return the error
+			if etherscanErr != nil {
+				return nil, fmt.Errorf("both providers failed - etherscan: %v, alchemy: %w", etherscanErr, err)
+			}
+			return nil, fmt.Errorf("failed to fetch transactions from Alchemy: %w", err)
 		}
 		transactions = txs
 	}

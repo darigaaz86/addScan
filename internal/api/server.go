@@ -22,6 +22,7 @@ type Server struct {
 	queryService     *service.QueryService
 	snapshotService  *service.SnapshotService
 	userRepo         *storage.UserRepository
+	goldskyRepo      *storage.GoldskyRepository
 }
 
 // ServerConfig holds server configuration.
@@ -45,6 +46,7 @@ func NewServer(
 	queryService *service.QueryService,
 	snapshotService *service.SnapshotService,
 	userRepo *storage.UserRepository,
+	goldskyRepo *storage.GoldskyRepository,
 ) *Server {
 	s := &Server{
 		router:           mux.NewRouter(),
@@ -53,6 +55,7 @@ func NewServer(
 		queryService:     queryService,
 		snapshotService:  snapshotService,
 		userRepo:         userRepo,
+		goldskyRepo:      goldskyRepo,
 	}
 
 	// Create rate limiter
@@ -109,6 +112,10 @@ func (s *Server) setupRoutes() {
 	// User endpoints
 	api.HandleFunc("/users", s.handleCreateUser).Methods("POST")
 	api.HandleFunc("/users/{id}", s.handleGetUser).Methods("GET")
+
+	// Goldsky webhook endpoints (no rate limiting needed)
+	s.router.HandleFunc("/goldsky/traces", s.handleGoldskyTraces).Methods("POST")
+	s.router.HandleFunc("/goldsky/logs", s.handleGoldskyLogs).Methods("POST")
 }
 
 // handleHealth handles health check requests.

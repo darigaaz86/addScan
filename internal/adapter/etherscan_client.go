@@ -16,9 +16,11 @@ import (
 // EtherscanClient fetches complete transaction history from Etherscan API
 // This captures ALL transactions including approve, contract calls, token transfers, NFTs
 type EtherscanClient struct {
-	apiKey  string
-	baseURL string
-	client  *http.Client
+	apiKey      string
+	baseURL     string
+	client      *http.Client
+	lastRequest map[int]time.Time // per-chain last request time
+	rateLimitMs map[int]int       // per-chain rate limit in milliseconds
 }
 
 // EtherscanTransaction represents a normal/internal transaction from Etherscan API
@@ -145,6 +147,8 @@ func GetNativeAsset(chain types.ChainID) string {
 		return "ETH" // Optimism uses ETH
 	case types.ChainBase:
 		return "ETH" // Base uses ETH
+	case types.ChainBNB:
+		return "BNB"
 	default:
 		return "ETH"
 	}
@@ -153,9 +157,18 @@ func GetNativeAsset(chain types.ChainID) string {
 // NewEtherscanClient creates a new Etherscan API client
 func NewEtherscanClient(apiKey string) *EtherscanClient {
 	return &EtherscanClient{
-		apiKey:  apiKey,
-		baseURL: "https://api.etherscan.io/v2/api",
-		client:  &http.Client{Timeout: 30 * time.Second},
+		apiKey:      apiKey,
+		baseURL:     "https://api.etherscan.io/v2/api",
+		client:      &http.Client{Timeout: 30 * time.Second},
+		lastRequest: make(map[int]time.Time),
+		rateLimitMs: map[int]int{
+			1:     200, // Ethereum: 5 req/sec
+			137:   200, // Polygon: 5 req/sec
+			42161: 200, // Arbitrum: 5 req/sec
+			10:    200, // Optimism: 5 req/sec
+			8453:  200, // Base: 5 req/sec (Etherscan v2 unified limit)
+			56:    200, // BNB: 5 req/sec (Etherscan v2 unified limit)
+		},
 	}
 }
 
@@ -172,9 +185,30 @@ func (c *EtherscanClient) GetChainID(chain types.ChainID) int {
 		return 10
 	case types.ChainBase:
 		return 8453
+	case types.ChainBNB:
+		return 56
 	default:
 		return 1
 	}
+}
+
+// throttle waits if needed to respect per-chain rate limits
+func (c *EtherscanClient) throttle(chainID int) {
+	rateMs, ok := c.rateLimitMs[chainID]
+	if !ok {
+		rateMs = 200 // default 5 req/sec
+	}
+
+	lastReq, exists := c.lastRequest[chainID]
+	if exists {
+		elapsed := time.Since(lastReq)
+		minInterval := time.Duration(rateMs) * time.Millisecond
+		if elapsed < minInterval {
+			sleepTime := minInterval - elapsed
+			time.Sleep(sleepTime)
+		}
+	}
+	c.lastRequest[chainID] = time.Now()
 }
 
 // FetchAllTransactions fetches ALL transaction types for an address
@@ -239,28 +273,47 @@ func (c *EtherscanClient) FetchAllTransactions(ctx context.Context, address stri
 
 // fetchTransactionList fetches normal/internal transactions using Etherscan API
 func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address string, chainID int, action string) ([]*types.NormalizedTransaction, error) {
+	// Throttle requests per chain to avoid 429
+	c.throttle(chainID)
+
 	url := fmt.Sprintf("%s?chainid=%d&module=account&action=%s&address=%s&sort=desc&apikey=%s",
 		c.baseURL, chainID, action, address, c.apiKey)
 
-	body, err := c.doRequest(ctx, url)
+	body, err := c.doRequest(ctx, url, chainID)
 	if err != nil {
 		return nil, err
 	}
 
-	var ethResp EtherscanResponse
-	if err := json.Unmarshal(body, &ethResp); err != nil {
+	// Check if result is a string (error message like "No transactions found")
+	var rawResp struct {
+		Status  string          `json:"status"`
+		Message string          `json:"message"`
+		Result  json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(body, &rawResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if ethResp.Status != "1" {
-		if ethResp.Message == "No transactions found" {
+	// If status is not "1", check for known empty responses
+	if rawResp.Status != "1" {
+		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" || rawResp.Message == "NOTOK" {
 			return []*types.NormalizedTransaction{}, nil
 		}
-		return nil, fmt.Errorf("etherscan API error: %s", ethResp.Message)
+		return nil, fmt.Errorf("etherscan API error: %s", rawResp.Message)
 	}
 
-	transactions := make([]*types.NormalizedTransaction, 0, len(ethResp.Result))
-	for _, tx := range ethResp.Result {
+	// Check if result is a string (some APIs return string on empty)
+	if len(rawResp.Result) > 0 && rawResp.Result[0] == '"' {
+		return []*types.NormalizedTransaction{}, nil
+	}
+
+	var txList []EtherscanTransaction
+	if err := json.Unmarshal(rawResp.Result, &txList); err != nil {
+		return nil, fmt.Errorf("failed to parse transactions: %w", err)
+	}
+
+	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
+	for _, tx := range txList {
 		normalized := c.convertTransaction(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
 		if normalized != nil {
 			transactions = append(transactions, normalized)
@@ -272,28 +325,45 @@ func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address stri
 
 // fetchTokenTransfers fetches ERC20 token transfers
 func (c *EtherscanClient) fetchTokenTransfers(ctx context.Context, address string, chainID int) ([]*types.NormalizedTransaction, error) {
+	// Throttle requests per chain to avoid 429
+	c.throttle(chainID)
+
 	url := fmt.Sprintf("%s?chainid=%d&module=account&action=tokentx&address=%s&sort=desc&apikey=%s",
 		c.baseURL, chainID, address, c.apiKey)
 
-	body, err := c.doRequest(ctx, url)
+	body, err := c.doRequest(ctx, url, chainID)
 	if err != nil {
 		return nil, err
 	}
 
-	var resp EtherscanTokenResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	// Check if result is a string (error message like "No transactions found")
+	var rawResp struct {
+		Status  string          `json:"status"`
+		Message string          `json:"message"`
+		Result  json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(body, &rawResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if resp.Status != "1" {
-		if resp.Message == "No transactions found" {
+	if rawResp.Status != "1" {
+		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" || rawResp.Message == "NOTOK" {
 			return []*types.NormalizedTransaction{}, nil
 		}
-		return nil, fmt.Errorf("etherscan API error: %s", resp.Message)
+		return nil, fmt.Errorf("etherscan API error: %s", rawResp.Message)
 	}
 
-	transactions := make([]*types.NormalizedTransaction, 0, len(resp.Result))
-	for _, tx := range resp.Result {
+	if len(rawResp.Result) > 0 && rawResp.Result[0] == '"' {
+		return []*types.NormalizedTransaction{}, nil
+	}
+
+	var txList []EtherscanTokenTransfer
+	if err := json.Unmarshal(rawResp.Result, &txList); err != nil {
+		return nil, fmt.Errorf("failed to parse token transfers: %w", err)
+	}
+
+	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
+	for _, tx := range txList {
 		normalized := c.convertTokenTransfer(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
 		if normalized != nil {
 			transactions = append(transactions, normalized)
@@ -305,28 +375,45 @@ func (c *EtherscanClient) fetchTokenTransfers(ctx context.Context, address strin
 
 // fetchNFTTransfers fetches ERC721 NFT transfers
 func (c *EtherscanClient) fetchNFTTransfers(ctx context.Context, address string, chainID int) ([]*types.NormalizedTransaction, error) {
+	// Throttle requests per chain to avoid 429
+	c.throttle(chainID)
+
 	url := fmt.Sprintf("%s?chainid=%d&module=account&action=tokennfttx&address=%s&sort=desc&apikey=%s",
 		c.baseURL, chainID, address, c.apiKey)
 
-	body, err := c.doRequest(ctx, url)
+	body, err := c.doRequest(ctx, url, chainID)
 	if err != nil {
 		return nil, err
 	}
 
-	var resp EtherscanNFTResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse NFT response: %w", err)
+	// Check if result is a string (error message like "No transactions found")
+	var rawResp struct {
+		Status  string          `json:"status"`
+		Message string          `json:"message"`
+		Result  json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(body, &rawResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if resp.Status != "1" {
-		if resp.Message == "No transactions found" {
+	if rawResp.Status != "1" {
+		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" || rawResp.Message == "NOTOK" {
 			return []*types.NormalizedTransaction{}, nil
 		}
-		return nil, fmt.Errorf("etherscan API error: %s", resp.Message)
+		return nil, fmt.Errorf("etherscan API error: %s", rawResp.Message)
 	}
 
-	transactions := make([]*types.NormalizedTransaction, 0, len(resp.Result))
-	for _, tx := range resp.Result {
+	if len(rawResp.Result) > 0 && rawResp.Result[0] == '"' {
+		return []*types.NormalizedTransaction{}, nil
+	}
+
+	var txList []EtherscanNFTTransfer
+	if err := json.Unmarshal(rawResp.Result, &txList); err != nil {
+		return nil, fmt.Errorf("failed to parse NFT transfers: %w", err)
+	}
+
+	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
+	for _, tx := range txList {
 		normalized := c.convertNFTTransfer(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
 		if normalized != nil {
 			transactions = append(transactions, normalized)
@@ -338,28 +425,45 @@ func (c *EtherscanClient) fetchNFTTransfers(ctx context.Context, address string,
 
 // fetchERC1155Transfers fetches ERC1155 multi-token transfers
 func (c *EtherscanClient) fetchERC1155Transfers(ctx context.Context, address string, chainID int) ([]*types.NormalizedTransaction, error) {
+	// Throttle requests per chain to avoid 429
+	c.throttle(chainID)
+
 	url := fmt.Sprintf("%s?chainid=%d&module=account&action=token1155tx&address=%s&sort=desc&apikey=%s",
 		c.baseURL, chainID, address, c.apiKey)
 
-	body, err := c.doRequest(ctx, url)
+	body, err := c.doRequest(ctx, url, chainID)
 	if err != nil {
 		return nil, err
 	}
 
-	var resp EtherscanERC1155Response
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse ERC1155 response: %w", err)
+	// Check if result is a string (error message like "No transactions found")
+	var rawResp struct {
+		Status  string          `json:"status"`
+		Message string          `json:"message"`
+		Result  json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(body, &rawResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if resp.Status != "1" {
-		if resp.Message == "No transactions found" {
+	if rawResp.Status != "1" {
+		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" || rawResp.Message == "NOTOK" {
 			return []*types.NormalizedTransaction{}, nil
 		}
-		return nil, fmt.Errorf("etherscan API error: %s", resp.Message)
+		return nil, fmt.Errorf("etherscan API error: %s", rawResp.Message)
 	}
 
-	transactions := make([]*types.NormalizedTransaction, 0, len(resp.Result))
-	for _, tx := range resp.Result {
+	if len(rawResp.Result) > 0 && rawResp.Result[0] == '"' {
+		return []*types.NormalizedTransaction{}, nil
+	}
+
+	var txList []EtherscanERC1155Transfer
+	if err := json.Unmarshal(rawResp.Result, &txList); err != nil {
+		return nil, fmt.Errorf("failed to parse ERC1155 transfers: %w", err)
+	}
+
+	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
+	for _, tx := range txList {
 		normalized := c.convertERC1155Transfer(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
 		if normalized != nil {
 			transactions = append(transactions, normalized)
@@ -369,25 +473,85 @@ func (c *EtherscanClient) fetchERC1155Transfers(ctx context.Context, address str
 	return transactions, nil
 }
 
-// doRequest performs HTTP request and returns response body
-func (c *EtherscanClient) doRequest(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+// doRequest performs HTTP request with retry logic for rate limiting (429)
+func (c *EtherscanClient) doRequest(ctx context.Context, url string, chainID int) ([]byte, error) {
+	const maxRetries = 5
+	baseDelay := 1 * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to make request: %w", err)
+			// Network error - retry with backoff
+			if attempt < maxRetries {
+				delay := baseDelay * time.Duration(1<<uint(attempt))
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+				log.Printf("[Etherscan] Request failed (attempt %d/%d): %v, retrying in %v", attempt+1, maxRetries+1, err, delay)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+				}
+			}
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		// Handle rate limiting (429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastErr = fmt.Errorf("rate limited (429)")
+			if attempt < maxRetries {
+				// Use Retry-After header if present, otherwise exponential backoff
+				delay := baseDelay * time.Duration(1<<uint(attempt))
+				if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+					if seconds, err := strconv.Atoi(retryAfter); err == nil {
+						delay = time.Duration(seconds) * time.Second
+					}
+				}
+				if delay > 60*time.Second {
+					delay = 60 * time.Second
+				}
+				log.Printf("[Etherscan] Rate limited on chain %d (attempt %d/%d), retrying in %v", chainID, attempt+1, maxRetries+1, delay)
+
+				// Increase throttle for this chain after hitting 429
+				if currentRate, ok := c.rateLimitMs[chainID]; ok {
+					c.rateLimitMs[chainID] = currentRate + 100 // Add 100ms to throttle
+					log.Printf("[Etherscan] Increased throttle for chain %d to %dms", chainID, c.rateLimitMs[chainID])
+				}
+
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+				}
+			}
+			continue
+		}
+
+		// Handle other HTTP errors
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("HTTP error: %d - %s", resp.StatusCode, string(body))
+		}
+
+		return body, nil
 	}
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	return body, nil
+	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
 }
 
 // convertTransaction converts Etherscan transaction to NormalizedTransaction
@@ -594,10 +758,14 @@ func (c *EtherscanClient) FetchTransactionsInRange(ctx context.Context, address 
 	}
 
 	chainID := c.GetChainID(chain)
+
+	// Throttle requests per chain to avoid 429
+	c.throttle(chainID)
+
 	url := fmt.Sprintf("%s?chainid=%d&module=account&action=txlist&address=%s&startblock=%d&endblock=%d&sort=asc&apikey=%s",
 		c.baseURL, chainID, address, startBlock, endBlock, c.apiKey)
 
-	body, err := c.doRequest(ctx, url)
+	body, err := c.doRequest(ctx, url, chainID)
 	if err != nil {
 		return nil, err
 	}

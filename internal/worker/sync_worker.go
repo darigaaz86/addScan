@@ -27,6 +27,7 @@ type SyncWorker struct {
 	cache              *storage.RedisCache
 	pollInterval       time.Duration
 	maxBlocksPerPoll   int
+	maxBlocksPerBatch  int // Max blocks per eth_getLogs call (Alchemy free tier: 10)
 	lastBlockProcessed uint64
 	running            bool
 	mu                 sync.RWMutex
@@ -36,6 +37,7 @@ type SyncWorker struct {
 	addressesTracked   int
 	tierProvider       *TierAwareAddressProvider
 	useTierPriority    bool
+	useBatchedPolling  bool // Use batched eth_getLogs for CU efficiency
 	// Rate limiting components (optional, for backward compatibility)
 	rateLimitTracker  *ratelimit.CUBudgetTracker
 	rateLimitRegistry *ratelimit.CUCostRegistry
@@ -43,17 +45,19 @@ type SyncWorker struct {
 
 // SyncWorkerConfig holds configuration for a sync worker
 type SyncWorkerConfig struct {
-	Chain            types.ChainID
-	ChainAdapter     adapter.ChainAdapter
-	TxRepo           *storage.TransactionRepository
-	SyncStatusRepo   *storage.SyncStatusRepository
-	AddressRepo      *storage.AddressRepository
-	PortfolioRepo    *storage.PortfolioRepository
-	UserRepo         *storage.UserRepository
-	Cache            *storage.RedisCache
-	PollInterval     time.Duration
-	MaxBlocksPerPoll int  // Maximum blocks to process per poll cycle (default: 30)
-	UseTierPriority  bool // Enable tier-based priority for address processing
+	Chain             types.ChainID
+	ChainAdapter      adapter.ChainAdapter
+	TxRepo            *storage.TransactionRepository
+	SyncStatusRepo    *storage.SyncStatusRepository
+	AddressRepo       *storage.AddressRepository
+	PortfolioRepo     *storage.PortfolioRepository
+	UserRepo          *storage.UserRepository
+	Cache             *storage.RedisCache
+	PollInterval      time.Duration
+	MaxBlocksPerPoll  int  // Maximum blocks to process per poll cycle (default: 30)
+	MaxBlocksPerBatch int  // Maximum blocks per eth_getLogs call (default: 10 for Alchemy free tier)
+	UseTierPriority   bool // Enable tier-based priority for address processing
+	UseBatchedPolling bool // Use batched eth_getLogs for CU efficiency (recommended for fast chains)
 	// Rate limiting components (optional, for backward compatibility)
 	// If provided, the sync worker will use PriorityHigh for real-time sync operations
 	// Requirements: 3.1, 3.2, 5.5
@@ -133,6 +137,12 @@ func NewSyncWorker(cfg *SyncWorkerConfig) (*SyncWorker, error) {
 		maxBlocksPerPoll = 30
 	}
 
+	// Default maxBlocksPerBatch: 10 (Alchemy free tier limit for eth_getLogs)
+	maxBlocksPerBatch := cfg.MaxBlocksPerBatch
+	if maxBlocksPerBatch <= 0 {
+		maxBlocksPerBatch = 10
+	}
+
 	return &SyncWorker{
 		chain:             cfg.Chain,
 		chainAdapter:      cfg.ChainAdapter,
@@ -144,10 +154,12 @@ func NewSyncWorker(cfg *SyncWorkerConfig) (*SyncWorker, error) {
 		cache:             cfg.Cache,
 		pollInterval:      pollInterval,
 		maxBlocksPerPoll:  maxBlocksPerPoll,
+		maxBlocksPerBatch: maxBlocksPerBatch,
 		stopCh:            make(chan struct{}),
 		doneCh:            make(chan struct{}),
 		tierProvider:      tierProvider,
 		useTierPriority:   cfg.UseTierPriority,
+		useBatchedPolling: cfg.UseBatchedPolling,
 		rateLimitTracker:  cfg.RateLimitTracker,
 		rateLimitRegistry: cfg.RateLimitRegistry,
 	}, nil
@@ -253,7 +265,13 @@ func (w *SyncWorker) pollLoop(ctx context.Context) {
 			w.mu.Unlock()
 
 			// Poll chain for new blocks
-			blocksProcessed, err := w.PollChain(ctx)
+			var blocksProcessed int
+			var err error
+			if w.useBatchedPolling {
+				blocksProcessed, err = w.PollChainBatched(ctx)
+			} else {
+				blocksProcessed, err = w.PollChain(ctx)
+			}
 			if err != nil {
 				log.Printf("[SyncWorker] Chain %s: poll error: %v", w.chain, err)
 				// Continue polling despite errors
@@ -342,6 +360,175 @@ func (w *SyncWorker) PollChain(ctx context.Context) (int, error) {
 	}
 
 	return blocksProcessed, nil
+}
+
+// PollChainBatched polls chain for new blocks using batched eth_getLogs
+// This is much more CU-efficient for fast chains like Base and BNB
+// Uses a single eth_getLogs call to cover multiple blocks instead of per-block calls
+// Returns number of new blocks processed
+func (w *SyncWorker) PollChainBatched(ctx context.Context) (int, error) {
+	// Get current block number
+	currentBlock, err := w.chainAdapter.GetCurrentBlock(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current block: %w", err)
+	}
+
+	w.mu.RLock()
+	lastBlock := w.lastBlockProcessed
+	maxBlocks := w.maxBlocksPerPoll
+	w.mu.RUnlock()
+
+	// No new blocks
+	if currentBlock <= lastBlock {
+		return 0, nil
+	}
+
+	// Calculate blocks behind and apply batch limit
+	blocksBehind := currentBlock - lastBlock
+	targetBlock := currentBlock
+	if blocksBehind > uint64(maxBlocks) {
+		targetBlock = lastBlock + uint64(maxBlocks)
+		log.Printf("[SyncWorker] Chain %s: %d blocks behind, processing %d blocks this cycle (batched)",
+			w.chain, blocksBehind, maxBlocks)
+	}
+
+	fromBlock := lastBlock + 1
+	blocksToProcess := int(targetBlock - lastBlock)
+
+	log.Printf("[SyncWorker] Chain %s: batched processing blocks %d-%d (%d blocks)",
+		w.chain, fromBlock, targetBlock, blocksToProcess)
+
+	// Get tracked addresses for this chain
+	trackedAddresses, err := w.getTrackedAddresses(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get tracked addresses: %w", err)
+	}
+
+	// Update addresses tracked count
+	w.mu.Lock()
+	w.addressesTracked = len(trackedAddresses)
+	w.mu.Unlock()
+
+	// No addresses to track
+	if len(trackedAddresses) == 0 {
+		// Still update progress even with no addresses
+		w.mu.Lock()
+		w.lastBlockProcessed = targetBlock
+		w.mu.Unlock()
+		if err := w.saveLastProcessedBlock(ctx, targetBlock); err != nil {
+			log.Printf("[SyncWorker] Chain %s: failed to save progress: %v", w.chain, err)
+		}
+		return blocksToProcess, nil
+	}
+
+	// Use the batched method from the adapter
+	// Type assert to check if adapter supports batched fetching
+	type batchedAdapter interface {
+		FetchTransactionsForBlockRange(ctx context.Context, fromBlock, toBlock uint64, addresses []string) ([]*types.NormalizedTransaction, error)
+	}
+
+	batchAdapter, ok := w.chainAdapter.(batchedAdapter)
+	if !ok {
+		// Fallback to per-block processing if adapter doesn't support batching
+		log.Printf("[SyncWorker] Chain %s: adapter doesn't support batched fetching, falling back to per-block", w.chain)
+		return w.PollChain(ctx)
+	}
+
+	startTime := time.Now()
+
+	// Process in smaller batches to respect Alchemy free tier limit (10 blocks per eth_getLogs)
+	w.mu.RLock()
+	batchSize := w.maxBlocksPerBatch
+	w.mu.RUnlock()
+	if batchSize <= 0 {
+		batchSize = 10
+	}
+
+	var allTransactions []*types.NormalizedTransaction
+	for batchStart := fromBlock; batchStart <= targetBlock; batchStart += uint64(batchSize) {
+		batchEnd := batchStart + uint64(batchSize) - 1
+		if batchEnd > targetBlock {
+			batchEnd = targetBlock
+		}
+
+		// Fetch transactions for this batch with retry for transient errors
+		var transactions []*types.NormalizedTransaction
+		var fetchErr error
+		maxRetries := 3
+
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			transactions, fetchErr = batchAdapter.FetchTransactionsForBlockRange(ctx, batchStart, batchEnd, trackedAddresses)
+			if fetchErr == nil {
+				break
+			}
+
+			// Check if it's a transient error worth retrying
+			errStr := fetchErr.Error()
+			isTransient := strings.Contains(errStr, "503") ||
+				strings.Contains(errStr, "429") ||
+				strings.Contains(errStr, "timeout") ||
+				strings.Contains(errStr, "connection") ||
+				strings.Contains(errStr, "EOF")
+
+			if !isTransient || attempt == maxRetries-1 {
+				log.Printf("[SyncWorker] Chain %s: failed to fetch blocks %d-%d after %d attempts: %v",
+					w.chain, batchStart, batchEnd, attempt+1, fetchErr)
+				break
+			}
+
+			// Exponential backoff: 1s, 2s, 4s
+			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			log.Printf("[SyncWorker] Chain %s: transient error fetching blocks %d-%d (attempt %d/%d), retrying in %v: %v",
+				w.chain, batchStart, batchEnd, attempt+1, maxRetries, backoff, fetchErr)
+
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		if fetchErr != nil {
+			// Continue with next batch instead of failing entirely
+			continue
+		}
+
+		if len(transactions) > 0 {
+			allTransactions = append(allTransactions, transactions...)
+		}
+	}
+
+	// Update addresses with new transactions
+	if len(allTransactions) > 0 {
+		updateResult, err := w.UpdateAddresses(ctx, allTransactions)
+		if err != nil {
+			log.Printf("[SyncWorker] Chain %s: failed to update addresses: %v", w.chain, err)
+		} else {
+			log.Printf("[SyncWorker] Chain %s: blocks %d-%d - found %d transactions for %d addresses (took %v)",
+				w.chain, fromBlock, targetBlock, len(allTransactions), updateResult.AddressesUpdated, time.Since(startTime))
+		}
+	} else {
+		log.Printf("[SyncWorker] Chain %s: blocks %d-%d - no transactions found (took %v)",
+			w.chain, fromBlock, targetBlock, time.Since(startTime))
+	}
+
+	// Update last block processed in memory
+	w.mu.Lock()
+	w.lastBlockProcessed = targetBlock
+	w.mu.Unlock()
+
+	// Persist progress to database
+	if err := w.saveLastProcessedBlock(ctx, targetBlock); err != nil {
+		log.Printf("[SyncWorker] Chain %s: failed to save progress: %v", w.chain, err)
+	}
+
+	// Log if still catching up
+	if targetBlock < currentBlock {
+		remaining := currentBlock - targetBlock
+		log.Printf("[SyncWorker] Chain %s: still %d blocks behind, will continue catching up", w.chain, remaining)
+	}
+
+	return blocksToProcess, nil
 }
 
 // loadLastProcessedBlock loads the last processed block from database

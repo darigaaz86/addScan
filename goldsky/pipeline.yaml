@@ -1,0 +1,873 @@
+name: addr-scanner
+apiVersion: 3
+resource_size: s
+
+sources:
+  # ============ ETHEREUM ============
+  eth_traces:
+    type: dataset
+    dataset_name: ethereum.raw_traces
+    version: 1.2.0
+    start_at: latest
+
+  eth_logs:
+    type: dataset
+    dataset_name: ethereum.raw_logs
+    version: 1.2.0
+    start_at: latest
+
+  # ============ BASE ============
+  base_traces:
+    type: dataset
+    dataset_name: base.raw_traces
+    version: 1.0.0
+    start_at: latest
+
+  base_logs:
+    type: dataset
+    dataset_name: base.raw_logs
+    version: 1.0.0
+    start_at: latest
+
+  # ============ BNB (BSC) ============
+  bsc_traces:
+    type: dataset
+    dataset_name: bsc.raw_traces
+    version: 1.0.0
+    start_at: latest
+
+  bsc_logs:
+    type: dataset
+    dataset_name: bsc.raw_logs
+    version: 1.0.0
+    start_at: latest
+
+transforms:
+  # ============ ETHEREUM TRANSFORMS ============
+  eth_filtered_traces:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT
+        id,
+        transaction_hash,
+        block_number,
+        block_timestamp,
+        from_address,
+        to_address,
+        value,
+        call_type,
+        gas_used,
+        status,
+        'ethereum' as chain
+      FROM eth_traces
+      WHERE
+        status = 1
+        AND (
+          lower(from_address) IN (
+            '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+            '0x999925b100da18020b93aec850723c25d674cf16',
+            '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+            '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+            '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+            '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+            '0x10b345de378e69668a41137f8bd5b657a191d174',
+            '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+            '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+            '0x061f65731068f9439ce2400b187bc49d87ae1044',
+            '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+            '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+            '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+            '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+            '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+            '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+            '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+            '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+            '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+            '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+            '0x124963385f48fe326831953af187c19770fd30da',
+            '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+            '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+            '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+            '0x74a8589752d309daa83685f68daaaf50aba10814',
+            '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+            '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+            '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+            '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+            '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+            '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+            '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+            '0xd2bd8d649662d8da78456433127b860a99776b47',
+            '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+            '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+            '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+            '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+            '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+            '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+            '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+            '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+            '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+            '0x7349c061335e15501f75beb7279d4c16fb122f44',
+            '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+            '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+            '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+            '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+            '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+            '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+            '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+            '0x0f981da41a034787e50805373e3185c90373c8f5',
+            '0x490dd891af6132ff6fc98b1298a5802983f08813',
+            '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+            '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+          )
+          OR lower(to_address) IN (
+            '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+            '0x999925b100da18020b93aec850723c25d674cf16',
+            '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+            '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+            '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+            '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+            '0x10b345de378e69668a41137f8bd5b657a191d174',
+            '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+            '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+            '0x061f65731068f9439ce2400b187bc49d87ae1044',
+            '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+            '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+            '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+            '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+            '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+            '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+            '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+            '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+            '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+            '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+            '0x124963385f48fe326831953af187c19770fd30da',
+            '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+            '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+            '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+            '0x74a8589752d309daa83685f68daaaf50aba10814',
+            '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+            '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+            '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+            '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+            '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+            '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+            '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+            '0xd2bd8d649662d8da78456433127b860a99776b47',
+            '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+            '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+            '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+            '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+            '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+            '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+            '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+            '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+            '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+            '0x7349c061335e15501f75beb7279d4c16fb122f44',
+            '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+            '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+            '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+            '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+            '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+            '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+            '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+            '0x0f981da41a034787e50805373e3185c90373c8f5',
+            '0x490dd891af6132ff6fc98b1298a5802983f08813',
+            '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+            '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+          )
+        )
+
+  eth_filtered_logs:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT
+        id,
+        transaction_hash,
+        block_number,
+        block_timestamp,
+        address as contract_address,
+        SPLIT_INDEX(topics, ',', 0) as event_signature,
+        CONCAT('0x', SUBSTRING(SPLIT_INDEX(topics, ',', 1), 27)) as from_address,
+        CONCAT('0x', SUBSTRING(SPLIT_INDEX(topics, ',', 2), 27)) as to_address,
+        topics,
+        data,
+        log_index,
+        'ethereum' as chain
+      FROM eth_logs
+      WHERE
+        lower(address) IN (
+          '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+          '0x999925b100da18020b93aec850723c25d674cf16',
+          '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+          '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+          '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+          '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+          '0x10b345de378e69668a41137f8bd5b657a191d174',
+          '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+          '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+          '0x061f65731068f9439ce2400b187bc49d87ae1044',
+          '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+          '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+          '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+          '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+          '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+          '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+          '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+          '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+          '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+          '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+          '0x124963385f48fe326831953af187c19770fd30da',
+          '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+          '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+          '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+          '0x74a8589752d309daa83685f68daaaf50aba10814',
+          '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+          '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+          '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+          '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+          '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+          '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+          '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+          '0xd2bd8d649662d8da78456433127b860a99776b47',
+          '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+          '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+          '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+          '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+          '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+          '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+          '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+          '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+          '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+          '0x7349c061335e15501f75beb7279d4c16fb122f44',
+          '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+          '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+          '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+          '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+          '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+          '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+          '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+          '0x0f981da41a034787e50805373e3185c90373c8f5',
+          '0x490dd891af6132ff6fc98b1298a5802983f08813',
+          '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+          '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+        )
+        OR topics LIKE '%fd13d0c145f4b553c1d2c0ad14dfa250b926b52e%'
+        OR topics LIKE '%999925b100da18020b93aec850723c25d674cf16%'
+        OR topics LIKE '%d92ce95d7144e19ad1cb6765b26bd25203f29bbf%'
+        OR topics LIKE '%1f64c3c24891b6caec88edd2ebf89514167de8da%'
+        OR topics LIKE '%4b1ab1e528354dc9730902256f6af83d2d6d935b%'
+        OR topics LIKE '%da1a91758d9fa7a15ae98efb054bc6bf8c6b5c65%'
+        OR topics LIKE '%10b345de378e69668a41137f8bd5b657a191d174%'
+        OR topics LIKE '%4e61e15524316f8e293daa85dc50dbabe2ee7d2e%'
+        OR topics LIKE '%f5c89bfee1ca1b89594b268f7bdbb775e39b8ced%'
+        OR topics LIKE '%061f65731068f9439ce2400b187bc49d87ae1044%'
+        OR topics LIKE '%d64beafa2b4a1a6427aa11aa836d516a5cbe7fa5%'
+        OR topics LIKE '%034b5dbd5adb0b1287371cb274d8e3d134aaa45f%'
+        OR topics LIKE '%4e47fb10924c884ba6fbeda4bce778f4d5d2ca71%'
+        OR topics LIKE '%37b9444af5e4b14bc0e1ebe815fd1df9998ded2e%'
+        OR topics LIKE '%e6bb2e05dfde09260aa5fbb1df52a023ee73e990%'
+        OR topics LIKE '%f4a6d658abcee18204aa62bcdf5f67992bbdf45e%'
+        OR topics LIKE '%331f2bb09dad495f9a9420bb1bbd88c58967c46d%'
+        OR topics LIKE '%34c46f3cdb7cb09878d8c02af5d92bf84c1de303%'
+        OR topics LIKE '%ab604b0b5066e58bdb286ec0fc2f1183430b7d60%'
+        OR topics LIKE '%94a80b173b234882f30ce7757d9c1bb88d194c99%'
+        OR topics LIKE '%124963385f48fe326831953af187c19770fd30da%'
+        OR topics LIKE '%8e553968583ab2731d894ec9ade42e1731fffc41%'
+        OR topics LIKE '%7a1475076a5ec895a80ceb50c33c965a8ea38e06%'
+        OR topics LIKE '%c8bd6b537aa22551e16d8bdc40053b47de039b2c%'
+        OR topics LIKE '%74a8589752d309daa83685f68daaaf50aba10814%'
+        OR topics LIKE '%c71553cff0a45239fe4bb9a7115615628c30b103%'
+        OR topics LIKE '%cfc69ecaa8046bcb2879eb6565efdf69b3afec03%'
+        OR topics LIKE '%b6dd4cd17cf4ab850944fe368a40c1490699cf81%'
+        OR topics LIKE '%e4a6a1afeebd468543cc76e67357cadbe73ab696%'
+        OR topics LIKE '%46dfad29ca251c62a06ed426295d3c196e3fac91%'
+        OR topics LIKE '%a2afecff0d7d0356aaa61cc73c976422cefefa58%'
+        OR topics LIKE '%8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca%'
+        OR topics LIKE '%d2bd8d649662d8da78456433127b860a99776b47%'
+        OR topics LIKE '%0ae8210eb304c28f83ddc48954bd3a720d023ba7%'
+        OR topics LIKE '%e2e12516968632ef1c4c0322e370032bc8a17780%'
+        OR topics LIKE '%7808b8332d3f979a52cfbd15bec62eeebb8fd0c0%'
+        OR topics LIKE '%87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a%'
+        OR topics LIKE '%64e919bb292e0e22b712258b9f89086596cc48fd%'
+        OR topics LIKE '%d7eff104c2b137a98419e91df0fac9d0fd3a912b%'
+        OR topics LIKE '%dde6a1e386127909c3e773d251402a857fd2e87b%'
+        OR topics LIKE '%e6955f929604fc02bed05332683b0d25d5cf1f2f%'
+        OR topics LIKE '%b544c98acbd659b7394792b41577d1a30aaf99be%'
+        OR topics LIKE '%7349c061335e15501f75beb7279d4c16fb122f44%'
+        OR topics LIKE '%a7b7cc7b015a5ae5eb1098c0cfde4fadd6018231%'
+        OR topics LIKE '%c252dadef13dd8f8597803090c14bf6f4c0c35e5%'
+        OR topics LIKE '%9aa458df519fb0085f44913c7bb5ccdea7fe2b47%'
+        OR topics LIKE '%0bad88f7d2841efe3a2ccc5105a5476bbb2399f6%'
+        OR topics LIKE '%f67cce6a480f7f41fe864c8e38b246d346426182%'
+        OR topics LIKE '%16ca842c2493a75cb4046cd8c1c45b962d981d1d%'
+        OR topics LIKE '%13ae5b0abf95c2ae604568f1c608712b9da48f43%'
+        OR topics LIKE '%0f981da41a034787e50805373e3185c90373c8f5%'
+        OR topics LIKE '%490dd891af6132ff6fc98b1298a5802983f08813%'
+        OR topics LIKE '%dc694fec371beaba6af58bb3f28b135a4a0fa4b3%'
+        OR topics LIKE '%8efc306a77bb56b31ff5a1697f288e1c9588b833%'
+
+  # ============ BASE TRANSFORMS ============
+  base_filtered_traces:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT
+        id,
+        transaction_hash,
+        block_number,
+        block_timestamp,
+        from_address,
+        to_address,
+        value,
+        call_type,
+        gas_used,
+        status,
+        'base' as chain
+      FROM base_traces
+      WHERE
+        status = 1
+        AND (
+          lower(from_address) IN (
+            '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+            '0x999925b100da18020b93aec850723c25d674cf16',
+            '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+            '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+            '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+            '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+            '0x10b345de378e69668a41137f8bd5b657a191d174',
+            '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+            '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+            '0x061f65731068f9439ce2400b187bc49d87ae1044',
+            '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+            '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+            '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+            '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+            '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+            '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+            '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+            '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+            '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+            '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+            '0x124963385f48fe326831953af187c19770fd30da',
+            '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+            '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+            '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+            '0x74a8589752d309daa83685f68daaaf50aba10814',
+            '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+            '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+            '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+            '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+            '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+            '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+            '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+            '0xd2bd8d649662d8da78456433127b860a99776b47',
+            '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+            '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+            '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+            '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+            '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+            '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+            '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+            '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+            '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+            '0x7349c061335e15501f75beb7279d4c16fb122f44',
+            '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+            '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+            '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+            '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+            '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+            '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+            '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+            '0x0f981da41a034787e50805373e3185c90373c8f5',
+            '0x490dd891af6132ff6fc98b1298a5802983f08813',
+            '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+            '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+          )
+          OR lower(to_address) IN (
+            '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+            '0x999925b100da18020b93aec850723c25d674cf16',
+            '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+            '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+            '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+            '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+            '0x10b345de378e69668a41137f8bd5b657a191d174',
+            '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+            '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+            '0x061f65731068f9439ce2400b187bc49d87ae1044',
+            '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+            '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+            '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+            '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+            '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+            '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+            '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+            '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+            '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+            '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+            '0x124963385f48fe326831953af187c19770fd30da',
+            '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+            '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+            '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+            '0x74a8589752d309daa83685f68daaaf50aba10814',
+            '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+            '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+            '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+            '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+            '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+            '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+            '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+            '0xd2bd8d649662d8da78456433127b860a99776b47',
+            '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+            '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+            '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+            '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+            '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+            '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+            '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+            '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+            '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+            '0x7349c061335e15501f75beb7279d4c16fb122f44',
+            '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+            '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+            '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+            '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+            '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+            '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+            '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+            '0x0f981da41a034787e50805373e3185c90373c8f5',
+            '0x490dd891af6132ff6fc98b1298a5802983f08813',
+            '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+            '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+          )
+        )
+
+  base_filtered_logs:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT
+        id,
+        transaction_hash,
+        block_number,
+        block_timestamp,
+        address as contract_address,
+        SPLIT_INDEX(topics, ',', 0) as event_signature,
+        CONCAT('0x', SUBSTRING(SPLIT_INDEX(topics, ',', 1), 27)) as from_address,
+        CONCAT('0x', SUBSTRING(SPLIT_INDEX(topics, ',', 2), 27)) as to_address,
+        topics,
+        data,
+        log_index,
+        'base' as chain
+      FROM base_logs
+      WHERE
+        lower(address) IN (
+          '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+          '0x999925b100da18020b93aec850723c25d674cf16',
+          '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+          '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+          '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+          '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+          '0x10b345de378e69668a41137f8bd5b657a191d174',
+          '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+          '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+          '0x061f65731068f9439ce2400b187bc49d87ae1044',
+          '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+          '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+          '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+          '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+          '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+          '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+          '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+          '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+          '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+          '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+          '0x124963385f48fe326831953af187c19770fd30da',
+          '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+          '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+          '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+          '0x74a8589752d309daa83685f68daaaf50aba10814',
+          '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+          '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+          '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+          '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+          '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+          '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+          '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+          '0xd2bd8d649662d8da78456433127b860a99776b47',
+          '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+          '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+          '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+          '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+          '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+          '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+          '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+          '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+          '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+          '0x7349c061335e15501f75beb7279d4c16fb122f44',
+          '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+          '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+          '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+          '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+          '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+          '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+          '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+          '0x0f981da41a034787e50805373e3185c90373c8f5',
+          '0x490dd891af6132ff6fc98b1298a5802983f08813',
+          '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+          '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+        )
+        OR topics LIKE '%fd13d0c145f4b553c1d2c0ad14dfa250b926b52e%'
+        OR topics LIKE '%999925b100da18020b93aec850723c25d674cf16%'
+        OR topics LIKE '%d92ce95d7144e19ad1cb6765b26bd25203f29bbf%'
+        OR topics LIKE '%1f64c3c24891b6caec88edd2ebf89514167de8da%'
+        OR topics LIKE '%4b1ab1e528354dc9730902256f6af83d2d6d935b%'
+        OR topics LIKE '%da1a91758d9fa7a15ae98efb054bc6bf8c6b5c65%'
+        OR topics LIKE '%10b345de378e69668a41137f8bd5b657a191d174%'
+        OR topics LIKE '%4e61e15524316f8e293daa85dc50dbabe2ee7d2e%'
+        OR topics LIKE '%f5c89bfee1ca1b89594b268f7bdbb775e39b8ced%'
+        OR topics LIKE '%061f65731068f9439ce2400b187bc49d87ae1044%'
+        OR topics LIKE '%d64beafa2b4a1a6427aa11aa836d516a5cbe7fa5%'
+        OR topics LIKE '%034b5dbd5adb0b1287371cb274d8e3d134aaa45f%'
+        OR topics LIKE '%4e47fb10924c884ba6fbeda4bce778f4d5d2ca71%'
+        OR topics LIKE '%37b9444af5e4b14bc0e1ebe815fd1df9998ded2e%'
+        OR topics LIKE '%e6bb2e05dfde09260aa5fbb1df52a023ee73e990%'
+        OR topics LIKE '%f4a6d658abcee18204aa62bcdf5f67992bbdf45e%'
+        OR topics LIKE '%331f2bb09dad495f9a9420bb1bbd88c58967c46d%'
+        OR topics LIKE '%34c46f3cdb7cb09878d8c02af5d92bf84c1de303%'
+        OR topics LIKE '%ab604b0b5066e58bdb286ec0fc2f1183430b7d60%'
+        OR topics LIKE '%94a80b173b234882f30ce7757d9c1bb88d194c99%'
+        OR topics LIKE '%124963385f48fe326831953af187c19770fd30da%'
+        OR topics LIKE '%8e553968583ab2731d894ec9ade42e1731fffc41%'
+        OR topics LIKE '%7a1475076a5ec895a80ceb50c33c965a8ea38e06%'
+        OR topics LIKE '%c8bd6b537aa22551e16d8bdc40053b47de039b2c%'
+        OR topics LIKE '%74a8589752d309daa83685f68daaaf50aba10814%'
+        OR topics LIKE '%c71553cff0a45239fe4bb9a7115615628c30b103%'
+        OR topics LIKE '%cfc69ecaa8046bcb2879eb6565efdf69b3afec03%'
+        OR topics LIKE '%b6dd4cd17cf4ab850944fe368a40c1490699cf81%'
+        OR topics LIKE '%e4a6a1afeebd468543cc76e67357cadbe73ab696%'
+        OR topics LIKE '%46dfad29ca251c62a06ed426295d3c196e3fac91%'
+        OR topics LIKE '%a2afecff0d7d0356aaa61cc73c976422cefefa58%'
+        OR topics LIKE '%8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca%'
+        OR topics LIKE '%d2bd8d649662d8da78456433127b860a99776b47%'
+        OR topics LIKE '%0ae8210eb304c28f83ddc48954bd3a720d023ba7%'
+        OR topics LIKE '%e2e12516968632ef1c4c0322e370032bc8a17780%'
+        OR topics LIKE '%7808b8332d3f979a52cfbd15bec62eeebb8fd0c0%'
+        OR topics LIKE '%87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a%'
+        OR topics LIKE '%64e919bb292e0e22b712258b9f89086596cc48fd%'
+        OR topics LIKE '%d7eff104c2b137a98419e91df0fac9d0fd3a912b%'
+        OR topics LIKE '%dde6a1e386127909c3e773d251402a857fd2e87b%'
+        OR topics LIKE '%e6955f929604fc02bed05332683b0d25d5cf1f2f%'
+        OR topics LIKE '%b544c98acbd659b7394792b41577d1a30aaf99be%'
+        OR topics LIKE '%7349c061335e15501f75beb7279d4c16fb122f44%'
+        OR topics LIKE '%a7b7cc7b015a5ae5eb1098c0cfde4fadd6018231%'
+        OR topics LIKE '%c252dadef13dd8f8597803090c14bf6f4c0c35e5%'
+        OR topics LIKE '%9aa458df519fb0085f44913c7bb5ccdea7fe2b47%'
+        OR topics LIKE '%0bad88f7d2841efe3a2ccc5105a5476bbb2399f6%'
+        OR topics LIKE '%f67cce6a480f7f41fe864c8e38b246d346426182%'
+        OR topics LIKE '%16ca842c2493a75cb4046cd8c1c45b962d981d1d%'
+        OR topics LIKE '%13ae5b0abf95c2ae604568f1c608712b9da48f43%'
+        OR topics LIKE '%0f981da41a034787e50805373e3185c90373c8f5%'
+        OR topics LIKE '%490dd891af6132ff6fc98b1298a5802983f08813%'
+        OR topics LIKE '%dc694fec371beaba6af58bb3f28b135a4a0fa4b3%'
+        OR topics LIKE '%8efc306a77bb56b31ff5a1697f288e1c9588b833%'
+
+  # ============ BNB TRANSFORMS ============
+  bsc_filtered_traces:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT
+        id,
+        transaction_hash,
+        block_number,
+        block_timestamp,
+        from_address,
+        to_address,
+        value,
+        call_type,
+        gas_used,
+        status,
+        'bnb' as chain
+      FROM bsc_traces
+      WHERE
+        status = 1
+        AND (
+          lower(from_address) IN (
+            '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+            '0x999925b100da18020b93aec850723c25d674cf16',
+            '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+            '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+            '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+            '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+            '0x10b345de378e69668a41137f8bd5b657a191d174',
+            '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+            '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+            '0x061f65731068f9439ce2400b187bc49d87ae1044',
+            '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+            '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+            '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+            '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+            '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+            '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+            '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+            '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+            '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+            '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+            '0x124963385f48fe326831953af187c19770fd30da',
+            '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+            '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+            '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+            '0x74a8589752d309daa83685f68daaaf50aba10814',
+            '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+            '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+            '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+            '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+            '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+            '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+            '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+            '0xd2bd8d649662d8da78456433127b860a99776b47',
+            '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+            '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+            '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+            '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+            '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+            '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+            '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+            '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+            '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+            '0x7349c061335e15501f75beb7279d4c16fb122f44',
+            '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+            '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+            '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+            '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+            '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+            '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+            '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+            '0x0f981da41a034787e50805373e3185c90373c8f5',
+            '0x490dd891af6132ff6fc98b1298a5802983f08813',
+            '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+            '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+          )
+          OR lower(to_address) IN (
+            '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+            '0x999925b100da18020b93aec850723c25d674cf16',
+            '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+            '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+            '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+            '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+            '0x10b345de378e69668a41137f8bd5b657a191d174',
+            '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+            '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+            '0x061f65731068f9439ce2400b187bc49d87ae1044',
+            '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+            '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+            '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+            '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+            '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+            '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+            '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+            '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+            '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+            '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+            '0x124963385f48fe326831953af187c19770fd30da',
+            '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+            '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+            '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+            '0x74a8589752d309daa83685f68daaaf50aba10814',
+            '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+            '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+            '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+            '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+            '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+            '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+            '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+            '0xd2bd8d649662d8da78456433127b860a99776b47',
+            '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+            '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+            '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+            '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+            '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+            '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+            '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+            '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+            '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+            '0x7349c061335e15501f75beb7279d4c16fb122f44',
+            '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+            '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+            '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+            '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+            '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+            '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+            '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+            '0x0f981da41a034787e50805373e3185c90373c8f5',
+            '0x490dd891af6132ff6fc98b1298a5802983f08813',
+            '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+            '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+          )
+        )
+
+  bsc_filtered_logs:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT
+        id,
+        transaction_hash,
+        block_number,
+        block_timestamp,
+        address as contract_address,
+        SPLIT_INDEX(topics, ',', 0) as event_signature,
+        CONCAT('0x', SUBSTRING(SPLIT_INDEX(topics, ',', 1), 27)) as from_address,
+        CONCAT('0x', SUBSTRING(SPLIT_INDEX(topics, ',', 2), 27)) as to_address,
+        topics,
+        data,
+        log_index,
+        'bnb' as chain
+      FROM bsc_logs
+      WHERE
+        lower(address) IN (
+          '0xfd13d0c145f4b553c1d2c0ad14dfa250b926b52e',
+          '0x999925b100da18020b93aec850723c25d674cf16',
+          '0xd92ce95d7144e19ad1cb6765b26bd25203f29bbf',
+          '0x1f64c3c24891b6caec88edd2ebf89514167de8da',
+          '0x4b1ab1e528354dc9730902256f6af83d2d6d935b',
+          '0xda1a91758d9fa7a15ae98efb054bc6bf8c6b5c65',
+          '0x10b345de378e69668a41137f8bd5b657a191d174',
+          '0x4e61e15524316f8e293daa85dc50dbabe2ee7d2e',
+          '0xf5c89bfee1ca1b89594b268f7bdbb775e39b8ced',
+          '0x061f65731068f9439ce2400b187bc49d87ae1044',
+          '0xd64beafa2b4a1a6427aa11aa836d516a5cbe7fa5',
+          '0x034b5dbd5adb0b1287371cb274d8e3d134aaa45f',
+          '0x4e47fb10924c884ba6fbeda4bce778f4d5d2ca71',
+          '0x37b9444af5e4b14bc0e1ebe815fd1df9998ded2e',
+          '0xe6bb2e05dfde09260aa5fbb1df52a023ee73e990',
+          '0xf4a6d658abcee18204aa62bcdf5f67992bbdf45e',
+          '0x331f2bb09dad495f9a9420bb1bbd88c58967c46d',
+          '0x34c46f3cdb7cb09878d8c02af5d92bf84c1de303',
+          '0xab604b0b5066e58bdb286ec0fc2f1183430b7d60',
+          '0x94a80b173b234882f30ce7757d9c1bb88d194c99',
+          '0x124963385f48fe326831953af187c19770fd30da',
+          '0x8e553968583ab2731d894ec9ade42e1731fffc41',
+          '0x7a1475076a5ec895a80ceb50c33c965a8ea38e06',
+          '0xc8bd6b537aa22551e16d8bdc40053b47de039b2c',
+          '0x74a8589752d309daa83685f68daaaf50aba10814',
+          '0xc71553cff0a45239fe4bb9a7115615628c30b103',
+          '0xcfc69ecaa8046bcb2879eb6565efdf69b3afec03',
+          '0xb6dd4cd17cf4ab850944fe368a40c1490699cf81',
+          '0xe4a6a1afeebd468543cc76e67357cadbe73ab696',
+          '0x46dfad29ca251c62a06ed426295d3c196e3fac91',
+          '0xa2afecff0d7d0356aaa61cc73c976422cefefa58',
+          '0x8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca',
+          '0xd2bd8d649662d8da78456433127b860a99776b47',
+          '0x0ae8210eb304c28f83ddc48954bd3a720d023ba7',
+          '0xe2e12516968632ef1c4c0322e370032bc8a17780',
+          '0x7808b8332d3f979a52cfbd15bec62eeebb8fd0c0',
+          '0x87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a',
+          '0x64e919bb292e0e22b712258b9f89086596cc48fd',
+          '0xd7eff104c2b137a98419e91df0fac9d0fd3a912b',
+          '0xdde6a1e386127909c3e773d251402a857fd2e87b',
+          '0xe6955f929604fc02bed05332683b0d25d5cf1f2f',
+          '0xb544c98acbd659b7394792b41577d1a30aaf99be',
+          '0x7349c061335e15501f75beb7279d4c16fb122f44',
+          '0xa7b7cc7b015a5ae5eb1098c0cfde4fadd6018231',
+          '0xc252dadef13dd8f8597803090c14bf6f4c0c35e5',
+          '0x9aa458df519fb0085f44913c7bb5ccdea7fe2b47',
+          '0x0bad88f7d2841efe3a2ccc5105a5476bbb2399f6',
+          '0xf67cce6a480f7f41fe864c8e38b246d346426182',
+          '0x16ca842c2493a75cb4046cd8c1c45b962d981d1d',
+          '0x13ae5b0abf95c2ae604568f1c608712b9da48f43',
+          '0x0f981da41a034787e50805373e3185c90373c8f5',
+          '0x490dd891af6132ff6fc98b1298a5802983f08813',
+          '0xdc694fec371beaba6af58bb3f28b135a4a0fa4b3',
+          '0x8efc306a77bb56b31ff5a1697f288e1c9588b833'
+        )
+        OR topics LIKE '%fd13d0c145f4b553c1d2c0ad14dfa250b926b52e%'
+        OR topics LIKE '%999925b100da18020b93aec850723c25d674cf16%'
+        OR topics LIKE '%d92ce95d7144e19ad1cb6765b26bd25203f29bbf%'
+        OR topics LIKE '%1f64c3c24891b6caec88edd2ebf89514167de8da%'
+        OR topics LIKE '%4b1ab1e528354dc9730902256f6af83d2d6d935b%'
+        OR topics LIKE '%da1a91758d9fa7a15ae98efb054bc6bf8c6b5c65%'
+        OR topics LIKE '%10b345de378e69668a41137f8bd5b657a191d174%'
+        OR topics LIKE '%4e61e15524316f8e293daa85dc50dbabe2ee7d2e%'
+        OR topics LIKE '%f5c89bfee1ca1b89594b268f7bdbb775e39b8ced%'
+        OR topics LIKE '%061f65731068f9439ce2400b187bc49d87ae1044%'
+        OR topics LIKE '%d64beafa2b4a1a6427aa11aa836d516a5cbe7fa5%'
+        OR topics LIKE '%034b5dbd5adb0b1287371cb274d8e3d134aaa45f%'
+        OR topics LIKE '%4e47fb10924c884ba6fbeda4bce778f4d5d2ca71%'
+        OR topics LIKE '%37b9444af5e4b14bc0e1ebe815fd1df9998ded2e%'
+        OR topics LIKE '%e6bb2e05dfde09260aa5fbb1df52a023ee73e990%'
+        OR topics LIKE '%f4a6d658abcee18204aa62bcdf5f67992bbdf45e%'
+        OR topics LIKE '%331f2bb09dad495f9a9420bb1bbd88c58967c46d%'
+        OR topics LIKE '%34c46f3cdb7cb09878d8c02af5d92bf84c1de303%'
+        OR topics LIKE '%ab604b0b5066e58bdb286ec0fc2f1183430b7d60%'
+        OR topics LIKE '%94a80b173b234882f30ce7757d9c1bb88d194c99%'
+        OR topics LIKE '%124963385f48fe326831953af187c19770fd30da%'
+        OR topics LIKE '%8e553968583ab2731d894ec9ade42e1731fffc41%'
+        OR topics LIKE '%7a1475076a5ec895a80ceb50c33c965a8ea38e06%'
+        OR topics LIKE '%c8bd6b537aa22551e16d8bdc40053b47de039b2c%'
+        OR topics LIKE '%74a8589752d309daa83685f68daaaf50aba10814%'
+        OR topics LIKE '%c71553cff0a45239fe4bb9a7115615628c30b103%'
+        OR topics LIKE '%cfc69ecaa8046bcb2879eb6565efdf69b3afec03%'
+        OR topics LIKE '%b6dd4cd17cf4ab850944fe368a40c1490699cf81%'
+        OR topics LIKE '%e4a6a1afeebd468543cc76e67357cadbe73ab696%'
+        OR topics LIKE '%46dfad29ca251c62a06ed426295d3c196e3fac91%'
+        OR topics LIKE '%a2afecff0d7d0356aaa61cc73c976422cefefa58%'
+        OR topics LIKE '%8ca1b9822d4cb1e2b5d8fa61018b070fba0c22ca%'
+        OR topics LIKE '%d2bd8d649662d8da78456433127b860a99776b47%'
+        OR topics LIKE '%0ae8210eb304c28f83ddc48954bd3a720d023ba7%'
+        OR topics LIKE '%e2e12516968632ef1c4c0322e370032bc8a17780%'
+        OR topics LIKE '%7808b8332d3f979a52cfbd15bec62eeebb8fd0c0%'
+        OR topics LIKE '%87b902b647cc2e0b068e9c66ccc62e3da6ccbe1a%'
+        OR topics LIKE '%64e919bb292e0e22b712258b9f89086596cc48fd%'
+        OR topics LIKE '%d7eff104c2b137a98419e91df0fac9d0fd3a912b%'
+        OR topics LIKE '%dde6a1e386127909c3e773d251402a857fd2e87b%'
+        OR topics LIKE '%e6955f929604fc02bed05332683b0d25d5cf1f2f%'
+        OR topics LIKE '%b544c98acbd659b7394792b41577d1a30aaf99be%'
+        OR topics LIKE '%7349c061335e15501f75beb7279d4c16fb122f44%'
+        OR topics LIKE '%a7b7cc7b015a5ae5eb1098c0cfde4fadd6018231%'
+        OR topics LIKE '%c252dadef13dd8f8597803090c14bf6f4c0c35e5%'
+        OR topics LIKE '%9aa458df519fb0085f44913c7bb5ccdea7fe2b47%'
+        OR topics LIKE '%0bad88f7d2841efe3a2ccc5105a5476bbb2399f6%'
+        OR topics LIKE '%f67cce6a480f7f41fe864c8e38b246d346426182%'
+        OR topics LIKE '%16ca842c2493a75cb4046cd8c1c45b962d981d1d%'
+        OR topics LIKE '%13ae5b0abf95c2ae604568f1c608712b9da48f43%'
+        OR topics LIKE '%0f981da41a034787e50805373e3185c90373c8f5%'
+        OR topics LIKE '%490dd891af6132ff6fc98b1298a5802983f08813%'
+        OR topics LIKE '%dc694fec371beaba6af58bb3f28b135a4a0fa4b3%'
+        OR topics LIKE '%8efc306a77bb56b31ff5a1697f288e1c9588b833%'
+
+  # ============ COMBINED TRANSFORMS ============
+  all_traces:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT * FROM eth_filtered_traces
+      UNION ALL
+      SELECT * FROM base_filtered_traces
+      UNION ALL
+      SELECT * FROM bsc_filtered_traces
+
+  all_logs:
+    type: sql
+    primary_key: id
+    sql: |
+      SELECT * FROM eth_filtered_logs
+      UNION ALL
+      SELECT * FROM base_filtered_logs
+      UNION ALL
+      SELECT * FROM bsc_filtered_logs
+
+sinks:
+  traces_sink:
+    type: webhook
+    from: all_traces
+    url: https://uncommiseratively-unprotectable-lashay.ngrok-free.dev/goldsky/traces
+    one_row_per_request: false
+
+  logs_sink:
+    type: webhook
+    from: all_logs
+    url: https://uncommiseratively-unprotectable-lashay.ngrok-free.dev/goldsky/logs
+    one_row_per_request: false

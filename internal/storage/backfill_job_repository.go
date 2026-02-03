@@ -8,6 +8,7 @@ import (
 
 	"github.com/address-scanner/internal/models"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // BackfillJobRepository handles backfill job data persistence
@@ -46,6 +47,52 @@ func (r *BackfillJobRepository) Create(ctx context.Context, job *models.Backfill
 
 	if err != nil {
 		return fmt.Errorf("failed to create backfill job: %w", err)
+	}
+
+	return nil
+}
+
+// BatchCreate creates multiple backfill job records in a single transaction
+func (r *BackfillJobRepository) BatchCreate(ctx context.Context, jobs []*models.BackfillJobRecord) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.Pool().Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	query := `
+		INSERT INTO backfill_jobs (
+			job_id, address, chain, tier, status, priority,
+			transactions_fetched, started_at, completed_at, error, retry_count
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`
+
+	for _, job := range jobs {
+		_, err := tx.Exec(ctx, query,
+			job.JobID,
+			job.Address,
+			job.Chain,
+			job.Tier,
+			job.Status,
+			job.Priority,
+			job.TransactionsFetched,
+			job.StartedAt,
+			job.CompletedAt,
+			job.Error,
+			job.RetryCount,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert backfill job %s: %w", job.JobID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -270,4 +317,158 @@ func (r *BackfillJobRepository) UpdateStatus(ctx context.Context, jobID string, 
 	}
 
 	return nil
+}
+
+// RequeueFailedJobs re-queues failed jobs for retry
+// Optionally filter by chain. Pass empty string to re-queue all failed jobs.
+// Returns the number of jobs re-queued.
+func (r *BackfillJobRepository) RequeueFailedJobs(ctx context.Context, chain string) (int64, error) {
+	var query string
+	var result pgconn.CommandTag
+	var err error
+
+	if chain != "" {
+		query = `
+			UPDATE backfill_jobs
+			SET status = 'queued', error = NULL, retry_count = 0, completed_at = NULL
+			WHERE status = 'failed' AND chain = $1
+		`
+		result, err = r.db.Pool().Exec(ctx, query, chain)
+	} else {
+		query = `
+			UPDATE backfill_jobs
+			SET status = 'queued', error = NULL, retry_count = 0, completed_at = NULL
+			WHERE status = 'failed'
+		`
+		result, err = r.db.Pool().Exec(ctx, query)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to re-queue failed jobs: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+// RequeueTransientFailures re-queues jobs that failed with transient errors
+// Only re-queues jobs that:
+// - Have retry_count < maxRetries
+// - Failed more than cooldown duration ago
+// - Have transient error patterns (429, timeout, rate limit, connection)
+// Returns the number of jobs re-queued.
+func (r *BackfillJobRepository) RequeueTransientFailures(ctx context.Context, maxRetries int, cooldown time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-cooldown)
+
+	query := `
+		UPDATE backfill_jobs
+		SET status = 'queued', completed_at = NULL
+		WHERE status = 'failed'
+		  AND retry_count < $1
+		  AND completed_at < $2
+		  AND (
+		    error ILIKE '%429%'
+		    OR error ILIKE '%timeout%'
+		    OR error ILIKE '%rate limit%'
+		    OR error ILIKE '%connection%'
+		    OR error ILIKE '%temporary%'
+		    OR error ILIKE '%too many requests%'
+		  )
+		  AND NOT (
+		    error ILIKE '%not found%'
+		    OR error ILIKE '%invalid address%'
+		    OR error ILIKE '%unsupported%'
+		    OR error ILIKE '%unauthorized%'
+		  )
+	`
+
+	result, err := r.db.Pool().Exec(ctx, query, maxRetries, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("failed to re-queue transient failures: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+// DeleteOldFailedJobs deletes failed jobs older than the specified duration
+// Returns the number of jobs deleted.
+func (r *BackfillJobRepository) DeleteOldFailedJobs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+
+	query := `
+		DELETE FROM backfill_jobs
+		WHERE status = 'failed' AND completed_at < $1
+	`
+
+	result, err := r.db.Pool().Exec(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old failed jobs: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+// DeleteCompletedJobs deletes completed jobs older than the specified duration
+// Returns the number of jobs deleted.
+func (r *BackfillJobRepository) DeleteCompletedJobs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+
+	query := `
+		DELETE FROM backfill_jobs
+		WHERE status = 'completed' AND completed_at < $1
+	`
+
+	result, err := r.db.Pool().Exec(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old completed jobs: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+// GetJobStats returns job counts by status
+func (r *BackfillJobRepository) GetJobStats(ctx context.Context) (map[string]int64, error) {
+	query := `
+		SELECT status, COUNT(*) as count
+		FROM backfill_jobs
+		GROUP BY status
+	`
+
+	rows, err := r.db.Pool().Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get job stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := make(map[string]int64)
+	for rows.Next() {
+		var status string
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan job stats: %w", err)
+		}
+		stats[status] = count
+	}
+
+	return stats, rows.Err()
+}
+
+// ResetStaleInProgressJobs resets jobs stuck in "in_progress" status
+// Jobs are considered stale if they've been in_progress for longer than the threshold
+// This handles cases where the worker crashed while processing jobs
+func (r *BackfillJobRepository) ResetStaleInProgressJobs(ctx context.Context, staleThreshold time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-staleThreshold)
+
+	query := `
+		UPDATE backfill_jobs
+		SET status = 'queued'
+		WHERE status = 'in_progress'
+		  AND started_at < $1
+	`
+
+	result, err := r.db.Pool().Exec(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reset stale in_progress jobs: %w", err)
+	}
+
+	return result.RowsAffected(), nil
 }

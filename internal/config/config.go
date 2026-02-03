@@ -79,9 +79,11 @@ type ChainsConfig struct {
 
 // ChainConfig holds configuration for a specific chain
 type ChainConfig struct {
-	RPCPrimary   string
-	RPCSecondary string
-	PollInterval time.Duration
+	RPCPrimary        string   // Single primary RPC URL (legacy)
+	RPCSecondary      string   // Single secondary RPC URL (legacy)
+	RPCURLs           []string // Multiple RPC URLs for pool (preferred)
+	PollInterval      time.Duration
+	UseBatchedPolling bool // Use batched eth_getLogs for CU efficiency
 }
 
 // CacheConfig holds cache configuration
@@ -98,7 +100,8 @@ type BackfillConfig struct {
 
 // SyncConfig holds sync worker configuration
 type SyncConfig struct {
-	MaxBlocksPerPoll int // Maximum blocks to process per poll cycle (default: 30)
+	MaxBlocksPerPoll  int // Maximum blocks to process per poll cycle (default: 30)
+	MaxBlocksPerBatch int // Maximum blocks per eth_getLogs call (default: 10 for Alchemy free tier)
 }
 
 // RateLimitConfig holds rate limiting configuration
@@ -159,7 +162,8 @@ func LoadConfig() (*Config, error) {
 		},
 		Backfill: BackfillConfig{},
 		Sync: SyncConfig{
-			MaxBlocksPerPoll: getEnvAsInt("SYNC_MAX_BLOCKS_PER_POLL", 30),
+			MaxBlocksPerPoll:  getEnvAsInt("SYNC_MAX_BLOCKS_PER_POLL", 100),
+			MaxBlocksPerBatch: getEnvAsInt("SYNC_MAX_BLOCKS_PER_BATCH", 10), // Alchemy free tier: 10 blocks
 		},
 		RateLimit: RateLimitConfig{
 			FreeTier:    getEnvAsInt("RATE_LIMIT_FREE_TIER", 1000),
@@ -193,10 +197,37 @@ func loadChainConfigs() ChainsConfig {
 		}
 
 		prefix := strings.ToUpper(chain)
+
+		// Check for multiple RPC URLs first (comma-separated)
+		rpcURLsStr := getEnv(prefix+"_RPC_URLS", "")
+		var rpcURLs []string
+		if rpcURLsStr != "" {
+			for _, url := range strings.Split(rpcURLsStr, ",") {
+				url = strings.TrimSpace(url)
+				if url != "" {
+					rpcURLs = append(rpcURLs, url)
+				}
+			}
+		}
+
+		// Fall back to primary/secondary if no URLs specified
+		if len(rpcURLs) == 0 {
+			primary := getEnv(prefix+"_RPC_PRIMARY", "")
+			if primary != "" {
+				rpcURLs = append(rpcURLs, primary)
+			}
+			secondary := getEnv(prefix+"_RPC_SECONDARY", "")
+			if secondary != "" {
+				rpcURLs = append(rpcURLs, secondary)
+			}
+		}
+
 		chains[chain] = ChainConfig{
-			RPCPrimary:   getEnv(prefix+"_RPC_PRIMARY", ""),
-			RPCSecondary: getEnv(prefix+"_RPC_SECONDARY", ""),
-			PollInterval: getEnvAsDuration(prefix+"_POLL_INTERVAL", 15*time.Second),
+			RPCPrimary:        getEnv(prefix+"_RPC_PRIMARY", ""),
+			RPCSecondary:      getEnv(prefix+"_RPC_SECONDARY", ""),
+			RPCURLs:           rpcURLs,
+			PollInterval:      getEnvAsDuration(prefix+"_POLL_INTERVAL", 15*time.Second),
+			UseBatchedPolling: getEnvAsBool(prefix+"_USE_BATCHED_POLLING", true), // Default to true for CU efficiency
 		}
 	}
 
@@ -240,4 +271,13 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 		return defaultValue
 	}
 	return value
+}
+
+// getEnvAsBool gets an environment variable as a boolean with a default value
+func getEnvAsBool(key string, defaultValue bool) bool {
+	valueStr := strings.ToLower(getEnv(key, ""))
+	if valueStr == "" {
+		return defaultValue
+	}
+	return valueStr == "true" || valueStr == "1" || valueStr == "yes"
 }

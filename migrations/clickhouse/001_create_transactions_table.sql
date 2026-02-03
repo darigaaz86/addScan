@@ -31,3 +31,9 @@ ALTER TABLE transactions ADD INDEX IF NOT EXISTS idx_tx_chain chain TYPE set(10)
 
 -- Create index for block number
 ALTER TABLE transactions ADD INDEX IF NOT EXISTS idx_tx_block block_number TYPE minmax GRANULARITY 1;
+
+-- Create index for asset filtering
+ALTER TABLE transactions ADD INDEX IF NOT EXISTS idx_tx_asset asset TYPE bloom_filter GRANULARITY 1;
+
+-- Create index for category filtering
+ALTER TABLE transactions ADD INDEX IF NOT EXISTS idx_tx_category category TYPE set(10) GRANULARITY 1;

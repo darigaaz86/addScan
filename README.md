@@ -20,6 +20,7 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              API Server (:8080)                              │
 │  REST API for users, portfolios, addresses, transactions                     │
+│  + Goldsky webhook endpoints (/goldsky/traces, /goldsky/logs)                │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                     ┌─────────────────┼─────────────────┐
@@ -35,16 +36,22 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 │  ┌────────────────────────┐          ┌────────────────────────┐           │
 │  │      Sync Worker       │          │    Backfill Worker     │           │
 │  │  (Real-time updates)   │          │  (Historical data)     │           │
-│  │  Polls every 15s       │          │  Etherscan → Alchemy   │           │
+│  │  Alchemy RPC polling   │          │  Etherscan → Alchemy   │           │
 │  └────────────────────────┘          └────────────────────────┘           │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
-                    │                              │
-                    ▼                              ▼
-            ┌──────────────┐              ┌──────────────┐
-            │   Alchemy    │              │  Etherscan   │
-            │   RPC API    │              │     API      │
-            └──────────────┘              └──────────────┘
+         │                                         │
+         ▼                                         ▼
+  ┌──────────────┐                         ┌──────────────┐
+  │   Alchemy    │                         │  Etherscan   │
+  │   RPC API    │                         │     API      │
+  └──────────────┘                         └──────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Goldsky (Internal Transactions)                           │
+│  Streams traces + logs for ETH/Base/BNB → webhook → ClickHouse              │
+│  Catches contract-to-contract calls that RPC polling misses                  │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Components
@@ -52,8 +59,9 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 | Component | Description |
 |-----------|-------------|
 | **API Server** | REST API handling user requests, portfolio management, transaction queries |
-| **Sync Worker** | Real-time blockchain monitoring, polls new blocks every 15 seconds |
+| **Sync Worker** | Real-time blockchain monitoring via Alchemy RPC, polls new blocks every 15 seconds |
 | **Backfill Worker** | Fetches historical transactions for newly added addresses |
+| **Goldsky** | Streams internal transactions (traces) via webhook for ETH/Base/BNB |
 | **Postgres** | Stores metadata: users, portfolios, addresses, backfill jobs |
 | **ClickHouse** | Stores all transactions, optimized for time-series queries |
 | **Redis** | Caches recent transactions (1000 per address, configurable TTL) |
@@ -73,15 +81,20 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 
 ### Real-Time Sync
 
-1. Sync worker polls each chain every 15 seconds
-2. Scans new blocks for tracked addresses
-3. Detects:
-   - Native transfers (ETH, MATIC, etc.)
-   - ERC20 token transfers
-   - ERC721 NFT transfers
-   - ERC1155 multi-token transfers
-4. Stores transactions in ClickHouse
-5. Updates Redis cache
+Two complementary approaches:
+
+**1. RPC Polling (Alchemy)**
+- Sync worker polls each chain every 15 seconds
+- Scans new blocks for tracked addresses
+- Detects: Native transfers, ERC20/721/1155 tokens
+- Stores transactions in ClickHouse
+- Updates Redis cache
+
+**2. Goldsky Streaming (Internal Transactions)**
+- Streams traces and logs for ETH/Base/BNB
+- Catches internal transactions RPC polling misses
+- Webhook receives data → stores in ClickHouse
+- Materialized views merge into unified_timeline
 
 ### Querying Transactions
 
@@ -106,7 +119,10 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 
 | Table | Purpose |
 |-------|---------|
-| `transactions` | All transactions, partitioned by month |
+| `transactions` | All transactions from RPC/Etherscan, partitioned by month |
+| `goldsky_traces` | Internal transactions from Goldsky |
+| `goldsky_logs` | Token events from Goldsky |
+| `unified_timeline` | Merged view of all transaction sources |
 
 Transaction fields:
 - `hash`, `chain`, `address`, `from`, `to`, `value`
@@ -159,10 +175,11 @@ See [QUICKSTART.md](QUICKSTART.md) for setup instructions.
 Detailed implementation documentation:
 
 - [Backfill System](docs/BACKFILL.md) - Historical transaction fetching
-- [Sync Worker](docs/SYNC_WORKER.md) - Real-time blockchain monitoring
+- [Sync Worker](docs/SYNC_WORKER.md) - Real-time blockchain monitoring (RPC + Goldsky)
 - [Query Service](docs/QUERY_SERVICE.md) - Transaction queries and caching
 - [Portfolio Service](docs/PORTFOLIO_SERVICE.md) - Portfolio aggregation
 - [Rate Limiting](docs/RATE_LIMITING.md) - CU budget management
+- [Goldsky Setup](goldsky/README.md) - Internal transaction streaming
 - [API Specification](docs/api-swagger.yaml) - OpenAPI 3.0 spec
 
 ## Configuration

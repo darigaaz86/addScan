@@ -15,7 +15,9 @@ const (
 	CostEthGetLogs               = 75
 	CostEthGetTransactionByHash  = 15
 	CostEthGetTransactionReceipt = 15
-	CostAlchemyGetAssetTransfers = 150
+	// alchemy_getAssetTransfers: 150 CU per call, but FetchAlchemyAssetTransfers
+	// makes 2 calls (outgoing + incoming), so total cost is 300 CU
+	CostAlchemyGetAssetTransfers = 300
 )
 
 // RPC method names
