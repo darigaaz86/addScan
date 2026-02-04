@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/address-scanner/internal/types"
@@ -19,8 +20,51 @@ type EtherscanClient struct {
 	apiKey      string
 	baseURL     string
 	client      *http.Client
-	lastRequest map[int]time.Time // per-chain last request time
-	rateLimitMs map[int]int       // per-chain rate limit in milliseconds
+	rateLimiter *rateLimiter // single global rate limiter (3 req/sec for free tier)
+}
+
+// rateLimiter implements a simple token bucket rate limiter
+type rateLimiter struct {
+	tokens     float64
+	maxTokens  float64
+	refillRate float64 // tokens per second
+	lastRefill time.Time
+	mu         sync.Mutex
+}
+
+func newRateLimiter(requestsPerSecond float64) *rateLimiter {
+	return &rateLimiter{
+		tokens:     requestsPerSecond, // start full
+		maxTokens:  requestsPerSecond,
+		refillRate: requestsPerSecond,
+		lastRefill: time.Now(),
+	}
+}
+
+func (r *rateLimiter) wait() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Refill tokens based on elapsed time
+	now := time.Now()
+	elapsed := now.Sub(r.lastRefill).Seconds()
+	r.tokens += elapsed * r.refillRate
+	if r.tokens > r.maxTokens {
+		r.tokens = r.maxTokens
+	}
+	r.lastRefill = now
+
+	// If no tokens available, wait
+	if r.tokens < 1 {
+		waitTime := time.Duration((1 - r.tokens) / r.refillRate * float64(time.Second))
+		r.mu.Unlock()
+		time.Sleep(waitTime)
+		r.mu.Lock()
+		r.tokens = 0
+		r.lastRefill = time.Now()
+	} else {
+		r.tokens--
+	}
 }
 
 // EtherscanTransaction represents a normal/internal transaction from Etherscan API
@@ -156,19 +200,14 @@ func GetNativeAsset(chain types.ChainID) string {
 
 // NewEtherscanClient creates a new Etherscan API client
 func NewEtherscanClient(apiKey string) *EtherscanClient {
+	// Free tier: 3 requests per second (global, not per chain)
+	const requestsPerSecond = 3.0
+
 	return &EtherscanClient{
 		apiKey:      apiKey,
 		baseURL:     "https://api.etherscan.io/v2/api",
 		client:      &http.Client{Timeout: 30 * time.Second},
-		lastRequest: make(map[int]time.Time),
-		rateLimitMs: map[int]int{
-			1:     200, // Ethereum: 5 req/sec
-			137:   200, // Polygon: 5 req/sec
-			42161: 200, // Arbitrum: 5 req/sec
-			10:    200, // Optimism: 5 req/sec
-			8453:  200, // Base: 5 req/sec (Etherscan v2 unified limit)
-			56:    200, // BNB: 5 req/sec (Etherscan v2 unified limit)
-		},
+		rateLimiter: newRateLimiter(requestsPerSecond),
 	}
 }
 
@@ -192,23 +231,9 @@ func (c *EtherscanClient) GetChainID(chain types.ChainID) int {
 	}
 }
 
-// throttle waits if needed to respect per-chain rate limits
+// throttle waits for rate limiter before making request
 func (c *EtherscanClient) throttle(chainID int) {
-	rateMs, ok := c.rateLimitMs[chainID]
-	if !ok {
-		rateMs = 200 // default 5 req/sec
-	}
-
-	lastReq, exists := c.lastRequest[chainID]
-	if exists {
-		elapsed := time.Since(lastReq)
-		minInterval := time.Duration(rateMs) * time.Millisecond
-		if elapsed < minInterval {
-			sleepTime := minInterval - elapsed
-			time.Sleep(sleepTime)
-		}
-	}
-	c.lastRequest[chainID] = time.Now()
+	c.rateLimiter.wait()
 }
 
 // FetchAllTransactions fetches ALL transaction types for an address
@@ -526,12 +551,6 @@ func (c *EtherscanClient) doRequest(ctx context.Context, url string, chainID int
 					delay = 60 * time.Second
 				}
 				log.Printf("[Etherscan] Rate limited on chain %d (attempt %d/%d), retrying in %v", chainID, attempt+1, maxRetries+1, delay)
-
-				// Increase throttle for this chain after hitting 429
-				if currentRate, ok := c.rateLimitMs[chainID]; ok {
-					c.rateLimitMs[chainID] = currentRate + 100 // Add 100ms to throttle
-					log.Printf("[Etherscan] Increased throttle for chain %d to %dms", chainID, c.rateLimitMs[chainID])
-				}
 
 				select {
 				case <-time.After(delay):

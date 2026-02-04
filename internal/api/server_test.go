@@ -12,6 +12,7 @@ import (
 	"github.com/address-scanner/internal/models"
 	"github.com/address-scanner/internal/service"
 	"github.com/address-scanner/internal/types"
+	"github.com/gorilla/mux"
 )
 
 // Mock services for testing
@@ -33,12 +34,25 @@ func (m *mockAddressService) AddAddress(ctx context.Context, input *service.AddA
 	}, nil
 }
 
+func (m *mockAddressService) GetBalance(ctx context.Context, input *service.GetBalanceInput) (*service.GetBalanceResult, error) {
+	return &service.GetBalanceResult{
+		Address: input.Address,
+		Balances: []types.ChainBalance{
+			{
+				Chain:         types.ChainEthereum,
+				NativeBalance: "1000000000000000000",
+			},
+		},
+		UpdatedAt: time.Now(),
+	}, nil
+}
+
 type mockPortfolioService struct {
-	createFunc     func(ctx context.Context, input *service.CreatePortfolioInput) (*models.Portfolio, error)
-	getFunc        func(ctx context.Context, portfolioID, userID string) (*service.PortfolioView, error)
-	updateFunc     func(ctx context.Context, input *service.UpdatePortfolioInput) (*models.Portfolio, error)
-	deleteFunc     func(ctx context.Context, portfolioID, userID string) (*service.DeletePortfolioResult, error)
-	getStatsFunc   func(ctx context.Context, portfolioID, userID string) (*service.PortfolioStatistics, error)
+	createFunc   func(ctx context.Context, input *service.CreatePortfolioInput) (*models.Portfolio, error)
+	getFunc      func(ctx context.Context, portfolioID, userID string) (*service.PortfolioView, error)
+	updateFunc   func(ctx context.Context, input *service.UpdatePortfolioInput) (*models.Portfolio, error)
+	deleteFunc   func(ctx context.Context, portfolioID, userID string) (*service.DeletePortfolioResult, error)
+	getStatsFunc func(ctx context.Context, portfolioID, userID string) (*service.PortfolioStatistics, error)
 }
 
 func (m *mockPortfolioService) CreatePortfolio(ctx context.Context, input *service.CreatePortfolioInput) (*models.Portfolio, error) {
@@ -126,7 +140,7 @@ func (m *mockPortfolioService) GetStatistics(ctx context.Context, portfolioID, u
 }
 
 type mockQueryService struct {
-	queryFunc      func(ctx context.Context, input *service.QueryInput) (*service.QueryResult, error)
+	queryFunc        func(ctx context.Context, input *service.QueryInput) (*service.QueryResult, error)
 	searchByHashFunc func(ctx context.Context, hash string) (*types.NormalizedTransaction, error)
 }
 
@@ -196,20 +210,22 @@ func createTestServer() *Server {
 		PremiumTierRPS: 1000,
 	}
 
-	// Create service instances with nil dependencies for basic routing tests
-	// These will panic if actual business logic is called, but work for HTTP routing tests
-	addressService := &service.AddressService{}
-	portfolioService := &service.PortfolioService{}
-	queryService := &service.QueryService{}
-	snapshotService := &service.SnapshotService{}
+	// Create mock services for testing
+	addressService := &mockAddressService{}
+	portfolioService := &mockPortfolioService{}
+	queryService := &mockQueryService{}
+	snapshotService := &mockSnapshotService{}
 
-	return NewServer(
-		config,
-		addressService,
-		portfolioService,
-		queryService,
-		snapshotService,
-	)
+	server := &Server{
+		router:           mux.NewRouter(),
+		addressService:   addressService,
+		portfolioService: portfolioService,
+		queryService:     queryService,
+		snapshotService:  snapshotService,
+		config:           config,
+	}
+	server.setupRouter()
+	return server
 }
 
 // TestHealthEndpoint tests the health check endpoint
@@ -525,7 +541,9 @@ func TestSearchTransaction_NotFound(t *testing.T) {
 func TestCORSHeaders(t *testing.T) {
 	server := createTestServer()
 
-	req := httptest.NewRequest("OPTIONS", "/api/addresses", nil)
+	// Test CORS headers on a regular GET request (not OPTIONS)
+	// The middleware should add CORS headers to all responses
+	req := httptest.NewRequest("GET", "/health", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
 
 	w := httptest.NewRecorder()

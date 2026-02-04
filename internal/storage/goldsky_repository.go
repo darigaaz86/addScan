@@ -32,6 +32,7 @@ type GoldskyLog struct {
 	EventSignature  string
 	FromAddress     string
 	ToAddress       string
+	Amount          string // Decoded transfer amount (decimal string)
 	Topics          string
 	Data            string
 	LogIndex        uint32
@@ -107,7 +108,7 @@ func (r *GoldskyRepository) InsertLogs(ctx context.Context, logs []GoldskyLog) e
 		INSERT INTO goldsky_logs (
 			id, transaction_hash, block_number, block_timestamp,
 			contract_address, event_signature, from_address, to_address,
-			topics, data, log_index, chain
+			amount, topics, data, log_index, chain
 		)
 	`)
 	if err != nil {
@@ -120,6 +121,11 @@ func (r *GoldskyRepository) InsertLogs(ctx context.Context, logs []GoldskyLog) e
 			chain = "ethereum"
 		}
 
+		amount := l.Amount
+		if amount == "" {
+			amount = "0"
+		}
+
 		err := batch.Append(
 			l.ID,
 			l.TransactionHash,
@@ -129,6 +135,7 @@ func (r *GoldskyRepository) InsertLogs(ctx context.Context, logs []GoldskyLog) e
 			l.EventSignature,
 			l.FromAddress,
 			l.ToAddress,
+			amount,
 			l.Topics,
 			l.Data,
 			l.LogIndex,

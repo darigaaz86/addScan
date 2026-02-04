@@ -17,6 +17,7 @@ import (
 type AddressService struct {
 	addressRepo   *storage.AddressRepository
 	userRepo      *storage.UserRepository
+	balanceRepo   *storage.BalanceRepository // For calculating balances from tx history
 	chainAdapters map[types.ChainID]adapter.ChainAdapter
 	backfillQueue job.BackfillJob
 }
@@ -31,6 +32,24 @@ func NewAddressService(
 	return &AddressService{
 		addressRepo:   addressRepo,
 		userRepo:      userRepo,
+		chainAdapters: chainAdapters,
+		backfillQueue: backfillQueue,
+	}
+}
+
+// NewAddressServiceWithBalanceRepo creates address service with balance repository
+// Use this for paid tier users who can calculate balances from transaction history
+func NewAddressServiceWithBalanceRepo(
+	addressRepo *storage.AddressRepository,
+	userRepo *storage.UserRepository,
+	balanceRepo *storage.BalanceRepository,
+	chainAdapters map[types.ChainID]adapter.ChainAdapter,
+	backfillQueue job.BackfillJob,
+) *AddressService {
+	return &AddressService{
+		addressRepo:   addressRepo,
+		userRepo:      userRepo,
+		balanceRepo:   balanceRepo,
 		chainAdapters: chainAdapters,
 		backfillQueue: backfillQueue,
 	}
@@ -276,6 +295,9 @@ type GetBalanceResult struct {
 }
 
 // GetBalance retrieves the current balance for an address across chains
+// For paid tier users with complete transaction history, balances are calculated
+// from stored transactions (more accurate, no RPC calls needed)
+// For free tier or incomplete history, falls back to RPC calls
 func (s *AddressService) GetBalance(ctx context.Context, input *GetBalanceInput) (*GetBalanceResult, error) {
 	// Validate address format
 	if err := s.validateAddress(input.Address); err != nil {
@@ -291,6 +313,64 @@ func (s *AddressService) GetBalance(ctx context.Context, input *GetBalanceInput)
 		chains = s.getEnabledChains()
 	}
 
+	// Try to use calculated balances from transaction history (paid tier)
+	if s.balanceRepo != nil {
+		balances, err := s.getCalculatedBalances(ctx, address, chains)
+		if err == nil && len(balances) > 0 {
+			return &GetBalanceResult{
+				Address:   address,
+				Balances:  balances,
+				UpdatedAt: time.Now(),
+			}, nil
+		}
+		// Fall through to RPC if calculated balances fail
+	}
+
+	// Fallback: fetch balance from RPC (free tier or no history)
+	return s.getBalanceFromRPC(ctx, address, chains)
+}
+
+// getCalculatedBalances calculates balances from stored transaction history
+// This is more accurate and doesn't consume RPC quota
+func (s *AddressService) getCalculatedBalances(ctx context.Context, address string, chains []types.ChainID) ([]types.ChainBalance, error) {
+	var balances []types.ChainBalance
+
+	for _, chainID := range chains {
+		// Check if we have complete history for this address/chain
+		hasHistory, err := s.balanceRepo.HasCompleteHistory(ctx, address, chainID)
+		if err != nil || !hasHistory {
+			continue
+		}
+
+		// Get calculated balance
+		addrBalance, err := s.balanceRepo.GetAddressBalance(ctx, address, chainID)
+		if err != nil {
+			continue
+		}
+
+		// Convert to ChainBalance format
+		tokenBalances := make([]types.TokenBalance, len(addrBalance.TokenBalances))
+		for i, tb := range addrBalance.TokenBalances {
+			tokenBalances[i] = types.TokenBalance{
+				Token:    tb.TokenAddress,
+				Symbol:   tb.Symbol,
+				Balance:  tb.Balance,
+				Decimals: tb.Decimals,
+			}
+		}
+
+		balances = append(balances, types.ChainBalance{
+			Chain:         chainID,
+			NativeBalance: addrBalance.NativeBalance,
+			TokenBalances: tokenBalances,
+		})
+	}
+
+	return balances, nil
+}
+
+// getBalanceFromRPC fetches balance from RPC providers (fallback method)
+func (s *AddressService) getBalanceFromRPC(ctx context.Context, address string, chains []types.ChainID) (*GetBalanceResult, error) {
 	// If no chain adapters available, return error
 	if len(s.chainAdapters) == 0 {
 		return nil, &types.ServiceError{

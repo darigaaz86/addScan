@@ -8,21 +8,52 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/address-scanner/internal/models"
 	"github.com/address-scanner/internal/service"
 	"github.com/address-scanner/internal/storage"
+	"github.com/address-scanner/internal/types"
 	"github.com/gorilla/mux"
 )
+
+// Service interfaces for dependency injection and testing
+
+// AddressServiceInterface defines the interface for address service operations
+type AddressServiceInterface interface {
+	AddAddress(ctx context.Context, input *service.AddAddressInput) (*service.AddressTrackingResult, error)
+	GetBalance(ctx context.Context, input *service.GetBalanceInput) (*service.GetBalanceResult, error)
+}
+
+// PortfolioServiceInterface defines the interface for portfolio service operations
+type PortfolioServiceInterface interface {
+	CreatePortfolio(ctx context.Context, input *service.CreatePortfolioInput) (*models.Portfolio, error)
+	GetPortfolio(ctx context.Context, portfolioID, userID string) (*service.PortfolioView, error)
+	UpdatePortfolio(ctx context.Context, input *service.UpdatePortfolioInput) (*models.Portfolio, error)
+	DeletePortfolio(ctx context.Context, portfolioID, userID string) (*service.DeletePortfolioResult, error)
+	GetStatistics(ctx context.Context, portfolioID, userID string) (*service.PortfolioStatistics, error)
+}
+
+// QueryServiceInterface defines the interface for query service operations
+type QueryServiceInterface interface {
+	Query(ctx context.Context, input *service.QueryInput) (*service.QueryResult, error)
+	SearchByHash(ctx context.Context, hash string) (*types.NormalizedTransaction, error)
+}
+
+// SnapshotServiceInterface defines the interface for snapshot service operations
+type SnapshotServiceInterface interface {
+	GetSnapshots(ctx context.Context, portfolioID, userID string, from, to time.Time) ([]*models.PortfolioSnapshot, error)
+}
 
 // Server represents the HTTP API server.
 type Server struct {
 	router           *mux.Router
 	httpServer       *http.Server
-	addressService   *service.AddressService
-	portfolioService *service.PortfolioService
-	queryService     *service.QueryService
-	snapshotService  *service.SnapshotService
+	addressService   AddressServiceInterface
+	portfolioService PortfolioServiceInterface
+	queryService     QueryServiceInterface
+	snapshotService  SnapshotServiceInterface
 	userRepo         *storage.UserRepository
 	goldskyRepo      *storage.GoldskyRepository
+	config           *ServerConfig
 }
 
 // ServerConfig holds server configuration.
@@ -56,10 +87,18 @@ func NewServer(
 		snapshotService:  snapshotService,
 		userRepo:         userRepo,
 		goldskyRepo:      goldskyRepo,
+		config:           config,
 	}
 
+	s.setupRouter()
+
+	return s
+}
+
+// setupRouter configures the router with middleware and routes
+func (s *Server) setupRouter() {
 	// Create rate limiter
-	rateLimiter := NewRateLimiter(config.FreeTierRPS, config.BasicTierRPS, config.PremiumTierRPS)
+	rateLimiter := NewRateLimiter(s.config.FreeTierRPS, s.config.BasicTierRPS, s.config.PremiumTierRPS)
 
 	// Set up middleware (order matters!)
 	s.router.Use(LoggingMiddleware)
@@ -73,14 +112,12 @@ func NewServer(
 
 	// Create HTTP server
 	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf("%s:%s", config.Host, config.Port),
+		Addr:         fmt.Sprintf("%s:%s", s.config.Host, s.config.Port),
 		Handler:      s.router,
-		ReadTimeout:  config.ReadTimeout,
-		WriteTimeout: config.WriteTimeout,
-		IdleTimeout:  config.IdleTimeout,
+		ReadTimeout:  s.config.ReadTimeout,
+		WriteTimeout: s.config.WriteTimeout,
+		IdleTimeout:  s.config.IdleTimeout,
 	}
-
-	return s
 }
 
 // setupRoutes configures all API routes.

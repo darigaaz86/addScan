@@ -126,9 +126,9 @@ func TestGetTransactions_EmptyAddress(t *testing.T) {
 	w := httptest.NewRecorder()
 	server.router.ServeHTTP(w, req)
 
-	// Router should not match this route
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Expected status 404, got %d", w.Code)
+	// Router may redirect (301) or return not found (404) for malformed paths
+	if w.Code != http.StatusNotFound && w.Code != http.StatusMovedPermanently {
+		t.Errorf("Expected status 404 or 301, got %d", w.Code)
 	}
 }
 

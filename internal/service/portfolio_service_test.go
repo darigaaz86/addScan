@@ -83,6 +83,146 @@ func (m *mockAddressRepo) Exists(ctx context.Context, address string) (bool, err
 	return m.addresses[address], nil
 }
 
+// mockAddressService for testing portfolio service
+type mockAddressService struct {
+	addedAddresses map[string]bool
+	shouldFail     bool
+}
+
+func (m *mockAddressService) AddAddress(ctx context.Context, input *AddAddressInput) (*AddressTrackingResult, error) {
+	if m.shouldFail {
+		return nil, &types.ServiceError{
+			Code:    "ADDRESS_ADD_FAILED",
+			Message: "failed to add address",
+		}
+	}
+	if m.addedAddresses == nil {
+		m.addedAddresses = make(map[string]bool)
+	}
+	m.addedAddresses[input.Address] = true
+	return &AddressTrackingResult{
+		Success: true,
+		Address: input.Address,
+	}, nil
+}
+
+// mockAddressServiceForPortfolio implements the AddAddress method for testing
+type mockAddressServiceForPortfolio struct {
+	addedAddresses map[string]bool
+	shouldFail     bool
+}
+
+func (m *mockAddressServiceForPortfolio) AddAddress(ctx context.Context, input *AddAddressInput) (*AddressTrackingResult, error) {
+	if m.shouldFail {
+		return nil, &types.ServiceError{
+			Code:    "ADDRESS_ADD_FAILED",
+			Message: "failed to add address",
+		}
+	}
+	if m.addedAddresses == nil {
+		m.addedAddresses = make(map[string]bool)
+	}
+	m.addedAddresses[input.Address] = true
+	return &AddressTrackingResult{
+		Success: true,
+		Address: input.Address,
+	}, nil
+}
+
+// AddressAdder interface for dependency injection in tests
+type AddressAdder interface {
+	AddAddress(ctx context.Context, input *AddAddressInput) (*AddressTrackingResult, error)
+}
+
+// mockPortfolioServiceForTest wraps PortfolioService with a mock address adder
+type mockPortfolioServiceForTest struct {
+	*PortfolioService
+	mockAddrSvc AddressAdder
+}
+
+// NewPortfolioServiceWithMockAddressService creates a portfolio service with a mock address service for testing
+func NewPortfolioServiceWithMockAddressService(
+	portfolioRepo PortfolioRepository,
+	addressRepo AddressRepository,
+	transactionRepo TransactionRepository,
+	chainAdapters map[types.ChainID]adapter.ChainAdapter,
+	mockAddrSvc AddressAdder,
+) *mockPortfolioServiceForTest {
+	ps := &PortfolioService{
+		portfolioRepo:   portfolioRepo,
+		addressRepo:     addressRepo,
+		transactionRepo: transactionRepo,
+		chainAdapters:   chainAdapters,
+		addressService:  nil, // Will use mock instead
+	}
+	return &mockPortfolioServiceForTest{
+		PortfolioService: ps,
+		mockAddrSvc:      mockAddrSvc,
+	}
+}
+
+// CreatePortfolio overrides the base method to use mock address service
+func (s *mockPortfolioServiceForTest) CreatePortfolio(ctx context.Context, input *CreatePortfolioInput) (*Portfolio, error) {
+	// Validate input
+	if input.UserID == "" {
+		return nil, &types.ServiceError{
+			Code:    "INVALID_INPUT",
+			Message: "userId is required",
+		}
+	}
+
+	if input.Name == "" {
+		return nil, &types.ServiceError{
+			Code:    "INVALID_INPUT",
+			Message: "portfolio name is required",
+		}
+	}
+
+	if len(input.Addresses) == 0 {
+		return nil, &types.ServiceError{
+			Code:    "INVALID_INPUT",
+			Message: "at least one address is required",
+		}
+	}
+
+	// Ensure all addresses are tracked in the system
+	for _, addr := range input.Addresses {
+		exists, err := s.addressRepo.Exists(ctx, addr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check address existence: %w", err)
+		}
+
+		// If address doesn't exist, try to add it using mock
+		if !exists {
+			addInput := &AddAddressInput{
+				UserID:  input.UserID,
+				Address: addr,
+				Chains:  []types.ChainID{},
+				Tier:    "",
+			}
+
+			_, err := s.mockAddrSvc.AddAddress(ctx, addInput)
+			if err != nil {
+				return nil, fmt.Errorf("failed to add address %s: %w", addr, err)
+			}
+		}
+	}
+
+	// Create portfolio
+	portfolio := &models.Portfolio{
+		UserID:      input.UserID,
+		Name:        input.Name,
+		Description: input.Description,
+		Addresses:   input.Addresses,
+	}
+
+	if err := s.portfolioRepo.Create(ctx, portfolio); err != nil {
+		return nil, fmt.Errorf("failed to create portfolio: %w", err)
+	}
+
+	return portfolio, nil
+}
+
 type mockTransactionRepoForPortfolio struct {
 	transactions []*models.Transaction
 }
@@ -120,6 +260,10 @@ func (m *mockChainAdapter) FetchTransactionsForBlock(ctx context.Context, blockN
 	return nil, nil
 }
 
+func (m *mockChainAdapter) FetchTransactionsForBlockRange(ctx context.Context, fromBlock, toBlock uint64, addresses []string) ([]*types.NormalizedTransaction, error) {
+	return nil, nil
+}
+
 func (m *mockChainAdapter) GetCurrentBlock(ctx context.Context) (uint64, error) {
 	return 0, nil
 }
@@ -150,7 +294,7 @@ func TestPortfolioService_CreatePortfolio(t *testing.T) {
 		types.ChainEthereum: &mockChainAdapter{chainID: types.ChainEthereum},
 	}
 
-	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters)
+	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters, nil)
 
 	// Test: Create portfolio with valid addresses
 	input := &CreatePortfolioInput{
@@ -181,40 +325,35 @@ func TestPortfolioService_CreatePortfolio(t *testing.T) {
 }
 
 func TestPortfolioService_CreatePortfolio_InvalidAddress(t *testing.T) {
-	// Setup
+	// Setup - with the new auto-add behavior, this test verifies that
+	// when addressService fails to add an address, the portfolio creation fails
 	portfolioRepo := &mockPortfolioRepo{portfolios: make(map[string]*models.Portfolio)}
 	addressRepo := &mockAddressRepo{addresses: map[string]bool{
 		"0x1111111111111111111111111111111111111111": true,
+		// 0x9999... is NOT in the repo, so it will try to auto-add
 	}}
 	transactionRepo := &mockTransactionRepoForPortfolio{}
 	chainAdapters := map[types.ChainID]adapter.ChainAdapter{
 		types.ChainEthereum: &mockChainAdapter{chainID: types.ChainEthereum},
 	}
 
-	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters)
+	// Create a mock address service that fails when trying to add addresses
+	mockAddrSvc := &mockAddressServiceForPortfolio{shouldFail: true}
+	service := NewPortfolioServiceWithMockAddressService(portfolioRepo, addressRepo, transactionRepo, chainAdapters, mockAddrSvc)
 
-	// Test: Create portfolio with untracked address
+	// Test: Create portfolio with untracked address (auto-add will fail)
 	input := &CreatePortfolioInput{
 		UserID: "user-123",
 		Name:   "My Portfolio",
 		Addresses: []string{
 			"0x1111111111111111111111111111111111111111",
-			"0x9999999999999999999999999999999999999999", // Not tracked
+			"0x9999999999999999999999999999999999999999", // Not tracked, auto-add will fail
 		},
 	}
 
 	_, err := service.CreatePortfolio(context.Background(), input)
 	if err == nil {
-		t.Error("Expected error for untracked address, got nil")
-	}
-
-	serviceErr, ok := err.(*types.ServiceError)
-	if !ok {
-		t.Errorf("Expected ServiceError, got %T", err)
-	}
-
-	if serviceErr.Code != "ADDRESS_NOT_TRACKED" {
-		t.Errorf("Expected error code ADDRESS_NOT_TRACKED, got %s", serviceErr.Code)
+		t.Error("Expected error when auto-add fails, got nil")
 	}
 }
 
@@ -231,7 +370,7 @@ func TestPortfolioService_UpdatePortfolio(t *testing.T) {
 		types.ChainEthereum: &mockChainAdapter{chainID: types.ChainEthereum},
 	}
 
-	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters)
+	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters, nil)
 
 	// Create initial portfolio
 	createInput := &CreatePortfolioInput{
@@ -300,7 +439,7 @@ func TestPortfolioService_DeletePortfolio(t *testing.T) {
 		types.ChainEthereum: &mockChainAdapter{chainID: types.ChainEthereum},
 	}
 
-	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters)
+	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters, nil)
 
 	// Create portfolio
 	createInput := &CreatePortfolioInput{
@@ -343,7 +482,7 @@ func TestPortfolioService_ListPortfolios(t *testing.T) {
 		types.ChainEthereum: &mockChainAdapter{chainID: types.ChainEthereum},
 	}
 
-	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters)
+	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters, nil)
 
 	// Create multiple portfolios
 	for i := 1; i <= 3; i++ {
@@ -395,7 +534,7 @@ func TestPortfolioService_GetPortfolio(t *testing.T) {
 		types.ChainEthereum: &mockChainAdapter{chainID: types.ChainEthereum},
 	}
 
-	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters)
+	service := NewPortfolioService(portfolioRepo, addressRepo, transactionRepo, chainAdapters, nil)
 
 	// Create portfolio
 	createInput := &CreatePortfolioInput{

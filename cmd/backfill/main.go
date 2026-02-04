@@ -236,9 +236,14 @@ func main() {
 }
 
 // processLoop continuously processes backfill jobs
+// Processes up to 3 jobs concurrently (one per chain) since each chain has separate rate limits
 func processLoop(ctx context.Context, backfillService *service.BackfillService) {
-	ticker := time.NewTicker(5 * time.Second) // Check for new jobs every 5 seconds
+	ticker := time.NewTicker(2 * time.Second) // Check more frequently
 	defer ticker.Stop()
+
+	// Semaphore to limit concurrent jobs (one per chain max)
+	const maxConcurrent = 3
+	sem := make(chan struct{}, maxConcurrent)
 
 	for {
 		select {
@@ -246,10 +251,17 @@ func processLoop(ctx context.Context, backfillService *service.BackfillService) 
 			log.Println("Processing loop stopped")
 			return
 		case <-ticker.C:
-			// Process next job
-			if err := backfillService.ProcessNextJob(ctx); err != nil {
-				log.Printf("Error processing job: %v", err)
-				// Continue processing despite errors
+			// Try to start a new job if we have capacity
+			select {
+			case sem <- struct{}{}:
+				go func() {
+					defer func() { <-sem }()
+					if err := backfillService.ProcessNextJob(ctx); err != nil {
+						log.Printf("Error processing job: %v", err)
+					}
+				}()
+			default:
+				// All workers busy, skip this tick
 			}
 		}
 	}
