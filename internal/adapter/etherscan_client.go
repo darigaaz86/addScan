@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -321,8 +322,20 @@ func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address stri
 
 	// If status is not "1", check for known empty responses
 	if rawResp.Status != "1" {
-		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" || rawResp.Message == "NOTOK" {
+		// Log the actual response for debugging
+		log.Printf("[Etherscan] %s response for %s: status=%s, message=%s, result=%s",
+			action, address, rawResp.Status, rawResp.Message, string(rawResp.Result[:min(100, len(rawResp.Result))]))
+
+		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" {
 			return []*types.NormalizedTransaction{}, nil
+		}
+		// NOTOK with "No record found" in result is valid empty response
+		if rawResp.Message == "NOTOK" && strings.Contains(string(rawResp.Result), "No record") {
+			return []*types.NormalizedTransaction{}, nil
+		}
+		// Other NOTOK responses might be rate limiting or errors - return error to trigger retry
+		if rawResp.Message == "NOTOK" {
+			return nil, fmt.Errorf("etherscan API returned NOTOK: %s", string(rawResp.Result))
 		}
 		return nil, fmt.Errorf("etherscan API error: %s", rawResp.Message)
 	}
