@@ -421,6 +421,49 @@ func (r *PortfolioRepository) CountByUser(ctx context.Context, userID string) (i
 	return count, nil
 }
 
+// ListAll retrieves all portfolios (for snapshot worker)
+func (r *PortfolioRepository) ListAll(ctx context.Context) ([]*models.Portfolio, error) {
+	query := `
+		SELECT id, user_id, name, description, addresses, created_at, updated_at
+		FROM portfolios
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.Pool().Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all portfolios: %w", err)
+	}
+	defer rows.Close()
+
+	var portfolios []*models.Portfolio
+	for rows.Next() {
+		var portfolio models.Portfolio
+		var addresses []string
+
+		err := rows.Scan(
+			&portfolio.ID,
+			&portfolio.UserID,
+			&portfolio.Name,
+			&portfolio.Description,
+			&addresses,
+			&portfolio.CreatedAt,
+			&portfolio.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan portfolio: %w", err)
+		}
+
+		portfolio.Addresses = addresses
+		portfolios = append(portfolios, &portfolio)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating portfolios: %w", err)
+	}
+
+	return portfolios, nil
+}
+
 // GetAddressCount returns the number of addresses in a portfolio
 func (r *PortfolioRepository) GetAddressCount(ctx context.Context, portfolioID string) (int, error) {
 	var count int

@@ -14,7 +14,7 @@ import (
 type TransactionQuerier interface {
 	GetByAddress(ctx context.Context, address string, filters *storage.TransactionFilters) ([]*models.Transaction, error)
 	CountByAddress(ctx context.Context, address string, filters *storage.TransactionFilters) (int64, error)
-	GetByHash(ctx context.Context, hash string) (*models.Transaction, error)
+	GetByHash(ctx context.Context, hash string) ([]*models.Transaction, error)
 }
 
 // QueryService handles transaction queries with filtering, sorting, and pagination
@@ -169,7 +169,7 @@ func (s *QueryService) Query(ctx context.Context, input *QueryInput) (*QueryResu
 // Requirement 9.1: Transaction hash search within 200ms
 // Requirement 9.2: Cross-address hash search
 // Requirement 9.3: Handle not-found cases
-func (s *QueryService) SearchByHash(ctx context.Context, hash string) (*types.NormalizedTransaction, error) {
+func (s *QueryService) SearchByHash(ctx context.Context, hash string) ([]*types.NormalizedTransaction, error) {
 	startTime := time.Now()
 
 	if hash == "" {
@@ -178,41 +178,27 @@ func (s *QueryService) SearchByHash(ctx context.Context, hash string) (*types.No
 
 	// Query ClickHouse for transaction by hash
 	// The hash index (bloom filter) makes this fast
-	tx, err := s.transactionRepo.GetByHash(ctx, hash)
+	txs, err := s.transactionRepo.GetByHash(ctx, hash)
 	if err != nil {
 		// Check if it's already a ServiceError
 		if _, ok := err.(*types.ServiceError); ok {
 			return nil, err
 		}
-		// Check if it's a not-found error
-		if err.Error() == "sql: no rows in result set" || err.Error() == "EOF" {
-			return nil, &types.ServiceError{
-				Code:    "TRANSACTION_NOT_FOUND",
-				Message: fmt.Sprintf("Transaction with hash %s not found", hash),
-				Details: map[string]interface{}{
-					"hash": hash,
-				},
-			}
-		}
 		return nil, fmt.Errorf("failed to search transaction by hash: %w", err)
 	}
 
-	// Convert to normalized transaction
-	normalized := &types.NormalizedTransaction{
-		Hash:           tx.Hash,
-		Chain:          tx.Chain,
-		From:           tx.From,
-		To:             tx.To,
-		Value:          tx.Value,
-		Timestamp:      tx.Timestamp.Unix(),
-		BlockNumber:    tx.BlockNumber,
-		Status:         types.TransactionStatus(tx.Status),
-		GasUsed:        tx.GasUsed,
-		GasPrice:       tx.GasPrice,
-		TokenTransfers: tx.TokenTransfers,
-		MethodID:       tx.MethodID,
-		Input:          tx.Input,
+	if len(txs) == 0 {
+		return nil, &types.ServiceError{
+			Code:    "TRANSACTION_NOT_FOUND",
+			Message: fmt.Sprintf("Transaction with hash %s not found", hash),
+			Details: map[string]interface{}{
+				"hash": hash,
+			},
+		}
 	}
+
+	// Convert to normalized transactions (one per transfer record)
+	normalized := s.convertToNormalizedTransactions(txs)
 
 	queryTime := time.Since(startTime).Milliseconds()
 	fmt.Printf("Transaction hash search completed in %dms\n", queryTime)
@@ -299,8 +285,6 @@ func (s *QueryService) queryFromClickHouse(ctx context.Context, input *QueryInpu
 		Chains:    input.Chains,
 		DateFrom:  input.DateFrom,
 		DateTo:    input.DateTo,
-		MinValue:  input.MinValue,
-		MaxValue:  input.MaxValue,
 		Status:    input.Status,
 		SortBy:    input.SortBy,
 		SortOrder: input.SortOrder,
@@ -434,20 +418,29 @@ func (s *QueryService) applyDefaults(input *QueryInput) {
 func (s *QueryService) convertToNormalizedTransactions(transactions []*models.Transaction) []*types.NormalizedTransaction {
 	normalized := make([]*types.NormalizedTransaction, len(transactions))
 	for i, tx := range transactions {
+		var gasUsed, gasPrice, methodID *string
+		if tx.GasUsed != "" {
+			gasUsed = &tx.GasUsed
+		}
+		if tx.GasPrice != "" {
+			gasPrice = &tx.GasPrice
+		}
+		if tx.MethodID != "" {
+			methodID = &tx.MethodID
+		}
+
 		normalized[i] = &types.NormalizedTransaction{
-			Hash:           tx.Hash,
-			Chain:          tx.Chain,
-			From:           tx.From,
-			To:             tx.To,
-			Value:          tx.Value,
-			Timestamp:      tx.Timestamp.Unix(),
-			BlockNumber:    tx.BlockNumber,
-			Status:         types.TransactionStatus(tx.Status),
-			GasUsed:        tx.GasUsed,
-			GasPrice:       tx.GasPrice,
-			TokenTransfers: tx.TokenTransfers,
-			MethodID:       tx.MethodID,
-			Input:          tx.Input,
+			Hash:        tx.TxHash,
+			Chain:       tx.Chain,
+			From:        tx.TxFrom,
+			To:          tx.TxTo,
+			Value:       tx.Value,
+			Timestamp:   tx.Timestamp.Unix(),
+			BlockNumber: tx.BlockNumber,
+			Status:      types.TransactionStatus(tx.Status),
+			GasUsed:     gasUsed,
+			GasPrice:    gasPrice,
+			MethodID:    methodID,
 		}
 	}
 	return normalized

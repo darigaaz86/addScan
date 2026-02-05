@@ -37,14 +37,14 @@ func NewConsistencyChecker(
 
 // ConsistencyCheckResult represents the result of a consistency check
 type ConsistencyCheckResult struct {
-	Address           string        `json:"address"`
-	Chain             types.ChainID `json:"chain"`
-	Consistent        bool          `json:"consistent"`
-	CacheCount        int           `json:"cacheCount"`
-	DatabaseCount     int64         `json:"databaseCount"`
-	Inconsistencies   []string      `json:"inconsistencies,omitempty"`
-	CheckedAt         time.Time     `json:"checkedAt"`
-	CacheInvalidated  bool          `json:"cacheInvalidated"`
+	Address          string        `json:"address"`
+	Chain            types.ChainID `json:"chain"`
+	Consistent       bool          `json:"consistent"`
+	CacheCount       int           `json:"cacheCount"`
+	DatabaseCount    int64         `json:"databaseCount"`
+	Inconsistencies  []string      `json:"inconsistencies,omitempty"`
+	CheckedAt        time.Time     `json:"checkedAt"`
+	CacheInvalidated bool          `json:"cacheInvalidated"`
 }
 
 // CheckConsistency verifies that cached data matches ClickHouse after TTL
@@ -88,12 +88,12 @@ func (cc *ConsistencyChecker) CheckConsistency(ctx context.Context, address stri
 		// Counts match, now verify transaction hashes
 		cacheHashes := make(map[string]bool)
 		for _, tx := range cachedWindow.Transactions {
-			cacheHashes[tx.Hash] = true
+			cacheHashes[tx.TxHash] = true
 		}
 
 		dbHashes := make(map[string]bool)
 		for _, tx := range dbTransactions {
-			dbHashes[tx.Hash] = true
+			dbHashes[tx.TxHash] = true
 		}
 
 		// Check for missing transactions in cache
@@ -226,20 +226,20 @@ func (cc *ConsistencyChecker) StartPeriodicConsistencyCheck(ctx context.Context,
 func (cc *ConsistencyChecker) CompareTransactionData(cached *models.Transaction, db *models.Transaction) []string {
 	var differences []string
 
-	if cached.Hash != db.Hash {
-		differences = append(differences, fmt.Sprintf("hash mismatch: cache=%s, db=%s", cached.Hash, db.Hash))
+	if cached.TxHash != db.TxHash {
+		differences = append(differences, fmt.Sprintf("hash mismatch: cache=%s, db=%s", cached.TxHash, db.TxHash))
 	}
 
 	if cached.Chain != db.Chain {
 		differences = append(differences, fmt.Sprintf("chain mismatch: cache=%s, db=%s", cached.Chain, db.Chain))
 	}
 
-	if cached.From != db.From {
-		differences = append(differences, fmt.Sprintf("from mismatch: cache=%s, db=%s", cached.From, db.From))
+	if cached.TxFrom != db.TxFrom {
+		differences = append(differences, fmt.Sprintf("from mismatch: cache=%s, db=%s", cached.TxFrom, db.TxFrom))
 	}
 
-	if cached.To != db.To {
-		differences = append(differences, fmt.Sprintf("to mismatch: cache=%s, db=%s", cached.To, db.To))
+	if cached.TxTo != db.TxTo {
+		differences = append(differences, fmt.Sprintf("to mismatch: cache=%s, db=%s", cached.TxTo, db.TxTo))
 	}
 
 	if cached.Value != db.Value {
@@ -263,11 +263,11 @@ func (cc *ConsistencyChecker) CompareTransactionData(cached *models.Transaction,
 
 // GetConsistencyStats returns statistics about cache consistency
 type ConsistencyStats struct {
-	TotalChecks       int       `json:"totalChecks"`
-	ConsistentChecks  int       `json:"consistentChecks"`
-	InconsistentChecks int      `json:"inconsistentChecks"`
-	LastCheckTime     time.Time `json:"lastCheckTime"`
-	ConsistencyRate   float64   `json:"consistencyRate"`
+	TotalChecks        int       `json:"totalChecks"`
+	ConsistentChecks   int       `json:"consistentChecks"`
+	InconsistentChecks int       `json:"inconsistentChecks"`
+	LastCheckTime      time.Time `json:"lastCheckTime"`
+	ConsistencyRate    float64   `json:"consistencyRate"`
 }
 
 // This would require additional state tracking in a production implementation
@@ -275,10 +275,10 @@ type ConsistencyStats struct {
 func (cc *ConsistencyChecker) GetConsistencyStats() *ConsistencyStats {
 	// In a real implementation, this would track statistics over time
 	return &ConsistencyStats{
-		TotalChecks:       0,
-		ConsistentChecks:  0,
+		TotalChecks:        0,
+		ConsistentChecks:   0,
 		InconsistentChecks: 0,
-		LastCheckTime:     time.Now(),
-		ConsistencyRate:   0.0,
+		LastCheckTime:      time.Now(),
+		ConsistencyRate:    0.0,
 	}
 }

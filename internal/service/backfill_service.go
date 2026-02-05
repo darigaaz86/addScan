@@ -138,8 +138,25 @@ func (s *BackfillService) ProcessNextJob(ctx context.Context) error {
 		return nil
 	}
 
-	job := jobs[0]
+	return s.processJob(ctx, jobs[0])
+}
 
+// ProcessNextJobForChain processes the next queued backfill job for a specific chain
+func (s *BackfillService) ProcessNextJobForChain(ctx context.Context, chain types.ChainID) error {
+	jobs, err := s.backfillRepo.GetQueuedJobsForChain(ctx, chain, 1)
+	if err != nil {
+		return fmt.Errorf("failed to get next job for chain %s: %w", chain, err)
+	}
+
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	return s.processJob(ctx, jobs[0])
+}
+
+// processJob processes a single backfill job
+func (s *BackfillService) processJob(ctx context.Context, job *models.BackfillJobRecord) error {
 	log.Printf("[Backfill] Processing job %s for address %s on chain %s (tier: %s, retry: %d)",
 		job.JobID, job.Address, job.Chain, job.Tier, job.RetryCount)
 
@@ -209,8 +226,8 @@ func (s *BackfillService) processBackfill(ctx context.Context, job *models.Backf
 
 	modelTransactions := make([]*models.Transaction, 0, len(transactions))
 	for _, tx := range transactions {
-		modelTx := models.FromNormalizedTransaction(tx, job.Address)
-		modelTransactions = append(modelTransactions, modelTx)
+		modelTxs := models.FromNormalizedTransaction(tx, job.Address)
+		modelTransactions = append(modelTransactions, modelTxs...)
 	}
 
 	if err := s.txRepo.BatchInsert(ctx, modelTransactions); err != nil {

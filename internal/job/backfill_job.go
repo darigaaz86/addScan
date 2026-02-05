@@ -214,9 +214,9 @@ func (s *BackfillJobService) executeBackfill(ctx context.Context, job *models.Ba
 
 	// Store transactions in ClickHouse
 	if len(transactions) > 0 {
-		modelTransactions := make([]*models.Transaction, len(transactions))
-		for i, tx := range transactions {
-			modelTransactions[i] = models.FromNormalizedTransaction(tx, job.Address)
+		var modelTransactions []*models.Transaction
+		for _, tx := range transactions {
+			modelTransactions = append(modelTransactions, models.FromNormalizedTransaction(tx, job.Address)...)
 		}
 
 		if err := s.txRepo.BatchInsert(ctx, modelTransactions); err != nil {

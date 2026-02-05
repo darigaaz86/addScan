@@ -518,15 +518,19 @@ func TestPortfolioService_GetPortfolio(t *testing.T) {
 	transactionRepo := &mockTransactionRepoForPortfolio{
 		transactions: []*models.Transaction{
 			{
-				Hash:        "0xabc123",
-				Chain:       types.ChainEthereum,
-				Address:     "0x1111111111111111111111111111111111111111",
-				From:        "0x1111111111111111111111111111111111111111",
-				To:          "0x9999999999999999999999999999999999999999",
-				Value:       "1000000000000000000",
-				Timestamp:   time.Now(),
-				BlockNumber: 12345,
-				Status:      "success",
+				TxHash:       "0xabc123",
+				Chain:        types.ChainEthereum,
+				Address:      "0x1111111111111111111111111111111111111111",
+				TxFrom:       "0x1111111111111111111111111111111111111111",
+				TxTo:         "0x9999999999999999999999999999999999999999",
+				TransferType: types.TransferTypeNative,
+				TransferFrom: "0x1111111111111111111111111111111111111111",
+				TransferTo:   "0x9999999999999999999999999999999999999999",
+				Value:        "1000000000000000000",
+				Direction:    types.DirectionOut,
+				Timestamp:    time.Now(),
+				BlockNumber:  12345,
+				Status:       "success",
 			},
 		},
 	}
@@ -569,13 +573,14 @@ func TestPortfolioService_GetPortfolio(t *testing.T) {
 		t.Errorf("Expected 2 addresses, got %d", len(view.Addresses))
 	}
 
-	// Verify balance aggregation
-	if len(view.TotalBalance.Chains) == 0 {
-		t.Error("Expected balance data to be populated")
+	// Note: GetPortfolio returns basic view without expensive RPC calls
+	// Balance and timeline data are available via separate endpoints (GetStatistics, etc.)
+	// Verify that empty defaults are properly initialized
+	if view.TotalBalance.Chains == nil {
+		t.Error("Expected TotalBalance.Chains to be initialized (empty slice, not nil)")
 	}
 
-	// Verify timeline merging
-	if len(view.UnifiedTimeline) == 0 {
-		t.Error("Expected timeline to be populated")
+	if view.UnifiedTimeline == nil {
+		t.Error("Expected UnifiedTimeline to be initialized (empty slice, not nil)")
 	}
 }

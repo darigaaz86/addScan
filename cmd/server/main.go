@@ -174,6 +174,9 @@ func main() {
 	snapshotRepo := storage.NewSnapshotRepository(postgres.Pool())
 	txRepo := storage.NewTransactionRepository(clickhouse)
 	backfillJobRepo := storage.NewBackfillJobRepository(postgres)
+	balanceRepo := storage.NewBalanceRepository(clickhouse)
+	protocolRepo := storage.NewProtocolRepository(postgres)
+	tokenRepo := storage.NewTokenRegistryRepository(postgres)
 
 	// Initialize cache service
 	cacheService := storage.NewCacheService(redis, cfg.Cache.TTL)
@@ -223,8 +226,27 @@ func main() {
 		portfolioService,
 	)
 
+	// Position service (DeBank-aligned balance and protocol positions)
+	positionService := service.NewPositionService(
+		balanceRepo,
+		protocolRepo,
+		tokenRepo,
+	)
+
 	// Goldsky repository for real-time blockchain data
 	goldskyRepo := storage.NewGoldskyRepository(clickhouse)
+
+	// Balance snapshot service (for historical balance tracking)
+	balanceSnapshotRepo := storage.NewBalanceSnapshotRepository(clickhouse)
+	balanceSnapshotService := service.NewBalanceSnapshotService(
+		balanceSnapshotRepo,
+		balanceRepo,
+		addressRepo,
+		portfolioRepo,
+	)
+
+	// DeFi detector (for event-based protocol detection)
+	defiDetector := service.NewDeFiDetector(goldskyRepo, protocolRepo)
 
 	logger.Info("Services initialized")
 
@@ -241,7 +263,7 @@ func main() {
 		PremiumTierRPS:  cfg.RateLimit.PremiumTier,
 	}
 
-	server := api.NewServer(serverConfig, addressService, portfolioService, queryService, snapshotService, userRepo, goldskyRepo)
+	server := api.NewServer(serverConfig, addressService, portfolioService, queryService, snapshotService, balanceSnapshotService, positionService, defiDetector, userRepo, goldskyRepo)
 
 	// Start server in a goroutine
 	go func() {

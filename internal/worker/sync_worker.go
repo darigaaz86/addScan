@@ -658,8 +658,8 @@ func (w *SyncWorker) UpdateAddresses(ctx context.Context, transactions []*types.
 		for _, tx := range transactions {
 			// Only store if this tracked address is involved in the transaction
 			if strings.ToLower(tx.From) == address || strings.ToLower(tx.To) == address {
-				modelTx := models.FromNormalizedTransaction(tx, address)
-				modelTransactions = append(modelTransactions, modelTx)
+				modelTxs := models.FromNormalizedTransaction(tx, address)
+				modelTransactions = append(modelTransactions, modelTxs...)
 			}
 		}
 	}

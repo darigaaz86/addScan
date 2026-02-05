@@ -141,7 +141,7 @@ func (m *mockPortfolioService) GetStatistics(ctx context.Context, portfolioID, u
 
 type mockQueryService struct {
 	queryFunc        func(ctx context.Context, input *service.QueryInput) (*service.QueryResult, error)
-	searchByHashFunc func(ctx context.Context, hash string) (*types.NormalizedTransaction, error)
+	searchByHashFunc func(ctx context.Context, hash string) ([]*types.NormalizedTransaction, error)
 }
 
 func (m *mockQueryService) Query(ctx context.Context, input *service.QueryInput) (*service.QueryResult, error) {
@@ -162,17 +162,19 @@ func (m *mockQueryService) Query(ctx context.Context, input *service.QueryInput)
 	}, nil
 }
 
-func (m *mockQueryService) SearchByHash(ctx context.Context, hash string) (*types.NormalizedTransaction, error) {
+func (m *mockQueryService) SearchByHash(ctx context.Context, hash string) ([]*types.NormalizedTransaction, error) {
 	if m.searchByHashFunc != nil {
 		return m.searchByHashFunc(ctx, hash)
 	}
-	return &types.NormalizedTransaction{
-		Hash:      hash,
-		Chain:     types.ChainEthereum,
-		From:      "0x1234",
-		To:        "0x5678",
-		Value:     "1000000000000000000",
-		Timestamp: time.Now().Unix(),
+	return []*types.NormalizedTransaction{
+		{
+			Hash:      hash,
+			Chain:     types.ChainEthereum,
+			From:      "0x1234",
+			To:        "0x5678",
+			Value:     "1000000000000000000",
+			Timestamp: time.Now().Unix(),
+		},
 	}, nil
 }
 
@@ -520,12 +522,16 @@ func TestSearchTransaction_Success(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	var response types.NormalizedTransaction
+	var response []*types.NormalizedTransaction
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if response.Hash == "" {
+	if len(response) == 0 {
+		t.Error("Expected at least one transaction")
+	}
+
+	if response[0].Hash == "" {
 		t.Error("Expected transaction hash to be present")
 	}
 }

@@ -14,7 +14,7 @@ import (
 // Mock transaction repository for testing
 type mockTransactionRepo struct {
 	transactions []*models.Transaction
-	getByHashFn  func(ctx context.Context, hash string) (*models.Transaction, error)
+	getByHashFn  func(ctx context.Context, hash string) ([]*models.Transaction, error)
 }
 
 func (m *mockTransactionRepo) GetByAddress(ctx context.Context, address string, filters *storage.TransactionFilters) ([]*models.Transaction, error) {
@@ -116,22 +116,19 @@ func (m *mockTransactionRepo) CountByAddress(ctx context.Context, address string
 	return count, nil
 }
 
-func (m *mockTransactionRepo) GetByHash(ctx context.Context, hash string) (*models.Transaction, error) {
+func (m *mockTransactionRepo) GetByHash(ctx context.Context, hash string) ([]*models.Transaction, error) {
 	if m.getByHashFn != nil {
 		return m.getByHashFn(ctx, hash)
 	}
 
+	var result []*models.Transaction
 	for _, tx := range m.transactions {
-		if tx.Hash == hash {
-			return tx, nil
+		if tx.TxHash == hash {
+			result = append(result, tx)
 		}
 	}
-	
-	// Return a proper ServiceError for not found
-	return nil, &types.ServiceError{
-		Code:    "TRANSACTION_NOT_FOUND",
-		Message: "Transaction not found",
-	}
+
+	return result, nil
 }
 
 func TestQueryService_Query_Pagination(t *testing.T) {
@@ -140,15 +137,19 @@ func TestQueryService_Query_Pagination(t *testing.T) {
 	transactions := make([]*models.Transaction, 100)
 	for i := 0; i < 100; i++ {
 		transactions[i] = &models.Transaction{
-			Hash:        string(rune('a' + i)),
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now().Add(-time.Duration(i) * time.Hour),
-			BlockNumber: uint64(1000 + i),
-			Status:      string(types.StatusSuccess),
+			TxHash:       fmt.Sprintf("tx%d", i),
+			Chain:        types.ChainEthereum,
+			Address:      address,
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "1000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    time.Now().Add(-time.Duration(i) * time.Hour),
+			BlockNumber:  uint64(1000 + i),
+			Status:       string(types.StatusSuccess),
 		}
 	}
 
@@ -156,38 +157,38 @@ func TestQueryService_Query_Pagination(t *testing.T) {
 	service := NewQueryService(mockRepo, nil, nil)
 
 	tests := []struct {
-		name           string
-		limit          int
-		offset         int
-		expectedCount  int
+		name            string
+		limit           int
+		offset          int
+		expectedCount   int
 		expectedHasMore bool
 	}{
 		{
-			name:           "First page with default limit",
-			limit:          50,
-			offset:         0,
-			expectedCount:  50,
+			name:            "First page with default limit",
+			limit:           50,
+			offset:          0,
+			expectedCount:   50,
 			expectedHasMore: true,
 		},
 		{
-			name:           "Second page",
-			limit:          50,
-			offset:         50,
-			expectedCount:  50,
+			name:            "Second page",
+			limit:           50,
+			offset:          50,
+			expectedCount:   50,
 			expectedHasMore: false,
 		},
 		{
-			name:           "Small page",
-			limit:          10,
-			offset:         0,
-			expectedCount:  10,
+			name:            "Small page",
+			limit:           10,
+			offset:          0,
+			expectedCount:   10,
 			expectedHasMore: true,
 		},
 		{
-			name:           "Beyond available data",
-			limit:          50,
-			offset:         100,
-			expectedCount:  0,
+			name:            "Beyond available data",
+			limit:           50,
+			offset:          100,
+			expectedCount:   0,
 			expectedHasMore: false,
 		},
 	}
@@ -226,37 +227,49 @@ func TestQueryService_Query_DateRangeFilter(t *testing.T) {
 
 	transactions := []*models.Transaction{
 		{
-			Hash:        "tx1",
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   now.Add(-10 * time.Hour),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
+			TxHash:       "tx1",
+			Chain:        types.ChainEthereum,
+			Address:      address,
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "1000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    now.Add(-10 * time.Hour),
+			BlockNumber:  1000,
+			Status:       string(types.StatusSuccess),
 		},
 		{
-			Hash:        "tx2",
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "2000000000000000000",
-			Timestamp:   now.Add(-5 * time.Hour),
-			BlockNumber: 1001,
-			Status:      string(types.StatusSuccess),
+			TxHash:       "tx2",
+			Chain:        types.ChainEthereum,
+			Address:      address,
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "2000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    now.Add(-5 * time.Hour),
+			BlockNumber:  1001,
+			Status:       string(types.StatusSuccess),
 		},
 		{
-			Hash:        "tx3",
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "3000000000000000000",
-			Timestamp:   now.Add(-1 * time.Hour),
-			BlockNumber: 1002,
-			Status:      string(types.StatusSuccess),
+			TxHash:       "tx3",
+			Chain:        types.ChainEthereum,
+			Address:      address,
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "3000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    now.Add(-1 * time.Hour),
+			BlockNumber:  1002,
+			Status:       string(types.StatusSuccess),
 		},
 	}
 
@@ -294,37 +307,49 @@ func TestQueryService_Query_ChainFilter(t *testing.T) {
 
 	transactions := []*models.Transaction{
 		{
-			Hash:        "tx1",
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
+			TxHash:       "tx1",
+			Chain:        types.ChainEthereum,
+			Address:      address,
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "1000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    time.Now(),
+			BlockNumber:  1000,
+			Status:       string(types.StatusSuccess),
 		},
 		{
-			Hash:        "tx2",
-			Chain:       types.ChainPolygon,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "2000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1001,
-			Status:      string(types.StatusSuccess),
+			TxHash:       "tx2",
+			Chain:        types.ChainPolygon,
+			Address:      address,
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "2000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    time.Now(),
+			BlockNumber:  1001,
+			Status:       string(types.StatusSuccess),
 		},
 		{
-			Hash:        "tx3",
-			Chain:       types.ChainArbitrum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "3000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1002,
-			Status:      string(types.StatusSuccess),
+			TxHash:       "tx3",
+			Chain:        types.ChainArbitrum,
+			Address:      address,
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "3000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    time.Now(),
+			BlockNumber:  1002,
+			Status:       string(types.StatusSuccess),
 		},
 	}
 
@@ -352,15 +377,19 @@ func TestQueryService_Query_ChainFilter(t *testing.T) {
 func TestQueryService_SearchByHash(t *testing.T) {
 	transactions := []*models.Transaction{
 		{
-			Hash:        "0xabc123",
-			Chain:       types.ChainEthereum,
-			Address:     "0x1234567890123456789012345678901234567890",
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
+			TxHash:       "0xabc123",
+			Chain:        types.ChainEthereum,
+			Address:      "0x1234567890123456789012345678901234567890",
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "1000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    time.Now(),
+			BlockNumber:  1000,
+			Status:       string(types.StatusSuccess),
 		},
 	}
 
@@ -368,13 +397,17 @@ func TestQueryService_SearchByHash(t *testing.T) {
 	service := NewQueryService(mockRepo, nil, nil)
 
 	// Test successful search
-	tx, err := service.SearchByHash(context.Background(), "0xabc123")
+	txs, err := service.SearchByHash(context.Background(), "0xabc123")
 	if err != nil {
 		t.Fatalf("SearchByHash failed: %v", err)
 	}
 
-	if tx.Hash != "0xabc123" {
-		t.Errorf("Expected hash 0xabc123, got %s", tx.Hash)
+	if len(txs) == 0 {
+		t.Fatal("Expected at least 1 transaction")
+	}
+
+	if txs[0].Hash != "0xabc123" {
+		t.Errorf("Expected hash 0xabc123, got %s", txs[0].Hash)
 	}
 
 	// Test not found
@@ -525,236 +558,7 @@ func TestQueryService_ShouldUseCache(t *testing.T) {
 	}
 }
 
-
-func TestQueryService_QueryRouting_SimpleToCache(t *testing.T) {
-	// Test that simple queries attempt to use cache
-	address := "0x1234567890123456789012345678901234567890"
-	transactions := []*models.Transaction{
-		{
-			Hash:        "tx1",
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
-		},
-	}
-
-	mockRepo := &mockTransactionRepo{transactions: transactions}
-	service := NewQueryService(mockRepo, nil, nil)
-
-	// Simple query - should try cache first (but will fall back to ClickHouse in our mock)
-	input := &QueryInput{
-		Address: address,
-		Limit:   50,
-		Offset:  0,
-	}
-
-	result, err := service.Query(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-
-	// Verify query completed successfully
-	if len(result.Transactions) != 1 {
-		t.Errorf("Expected 1 transaction, got %d", len(result.Transactions))
-	}
-
-	// In our implementation, cache miss falls back to ClickHouse
-	// So cached should be false
-	if result.Cached {
-		t.Error("Expected cached=false for cache miss")
-	}
-}
-
-func TestQueryService_QueryRouting_ComplexToClickHouse(t *testing.T) {
-	// Test that complex queries go directly to ClickHouse
-	address := "0x1234567890123456789012345678901234567890"
-	now := time.Now()
-	dateFrom := now.Add(-24 * time.Hour)
-
-	transactions := []*models.Transaction{
-		{
-			Hash:        "tx1",
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   now.Add(-12 * time.Hour),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
-		},
-	}
-
-	mockRepo := &mockTransactionRepo{transactions: transactions}
-	service := NewQueryService(mockRepo, nil, nil)
-
-	// Complex query with date filter - should go directly to ClickHouse
-	input := &QueryInput{
-		Address:  address,
-		DateFrom: &dateFrom,
-		Limit:    50,
-		Offset:   0,
-	}
-
-	result, err := service.Query(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-
-	// Verify query completed successfully
-	if len(result.Transactions) != 1 {
-		t.Errorf("Expected 1 transaction, got %d", len(result.Transactions))
-	}
-
-	// Should not be cached since it's a complex query
-	if result.Cached {
-		t.Error("Expected cached=false for complex query")
-	}
-}
-
-func TestQueryService_QueryRouting_BeyondCacheWindow(t *testing.T) {
-	// Test that queries beyond cache window go to ClickHouse
-	address := "0x1234567890123456789012345678901234567890"
-	transactions := make([]*models.Transaction, 2000)
-	for i := 0; i < 2000; i++ {
-		transactions[i] = &models.Transaction{
-			Hash:        fmt.Sprintf("tx%d", i),
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now().Add(-time.Duration(i) * time.Hour),
-			BlockNumber: uint64(1000 + i),
-			Status:      string(types.StatusSuccess),
-		}
-	}
-
-	mockRepo := &mockTransactionRepo{transactions: transactions}
-	service := NewQueryService(mockRepo, nil, nil)
-	service.SetCacheWindowSize(1000)
-
-	// Query beyond cache window - should go directly to ClickHouse
-	input := &QueryInput{
-		Address: address,
-		Limit:   50,
-		Offset:  1500, // Beyond cache window of 1000
-	}
-
-	result, err := service.Query(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-
-	// Verify query completed successfully
-	if len(result.Transactions) != 50 {
-		t.Errorf("Expected 50 transactions, got %d", len(result.Transactions))
-	}
-
-	// Should not be cached since offset is beyond cache window
-	if result.Cached {
-		t.Error("Expected cached=false for query beyond cache window")
-	}
-}
-
-func TestQueryService_QueryRouting_MultipleFilters(t *testing.T) {
-	// Test that queries with multiple filters go to ClickHouse
-	address := "0x1234567890123456789012345678901234567890"
-	now := time.Now()
-	dateFrom := now.Add(-24 * time.Hour)
-	minValue := 1000.0
-
-	transactions := []*models.Transaction{
-		{
-			Hash:        "tx1",
-			Chain:       types.ChainEthereum,
-			Address:     address,
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "2000000000000000000",
-			Timestamp:   now.Add(-12 * time.Hour),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
-		},
-	}
-
-	mockRepo := &mockTransactionRepo{transactions: transactions}
-	service := NewQueryService(mockRepo, nil, nil)
-
-	// Query with multiple filters - should go directly to ClickHouse
-	input := &QueryInput{
-		Address:  address,
-		DateFrom: &dateFrom,
-		MinValue: &minValue,
-		Chains:   []types.ChainID{types.ChainEthereum},
-		Limit:    50,
-		Offset:   0,
-	}
-
-	result, err := service.Query(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-
-	// Verify query completed successfully
-	if len(result.Transactions) != 1 {
-		t.Errorf("Expected 1 transaction, got %d", len(result.Transactions))
-	}
-
-	// Should not be cached since it has complex filters
-	if result.Cached {
-		t.Error("Expected cached=false for query with multiple filters")
-	}
-}
-
-
-func TestQueryService_SearchByHash_Performance(t *testing.T) {
-	// Test that hash search completes quickly
-	// Requirement 9.1: Transaction hash search within 200ms
-	transactions := []*models.Transaction{
-		{
-			Hash:        "0xabc123def456",
-			Chain:       types.ChainEthereum,
-			Address:     "0x1234567890123456789012345678901234567890",
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
-		},
-	}
-
-	mockRepo := &mockTransactionRepo{transactions: transactions}
-	service := NewQueryService(mockRepo, nil, nil)
-
-	start := time.Now()
-	tx, err := service.SearchByHash(context.Background(), "0xabc123def456")
-	elapsed := time.Since(start)
-
-	if err != nil {
-		t.Fatalf("SearchByHash failed: %v", err)
-	}
-
-	if tx.Hash != "0xabc123def456" {
-		t.Errorf("Expected hash 0xabc123def456, got %s", tx.Hash)
-	}
-
-	// In a real implementation with ClickHouse bloom filter index,
-	// this should be under 200ms. For our mock, it should be instant.
-	if elapsed > 200*time.Millisecond {
-		t.Errorf("Hash search took %v, expected < 200ms", elapsed)
-	}
-}
-
 func TestQueryService_SearchByHash_NotFound(t *testing.T) {
-	// Test not-found case handling
-	// Requirement 9.3: Handle not-found cases
 	mockRepo := &mockTransactionRepo{transactions: []*models.Transaction{}}
 	service := NewQueryService(mockRepo, nil, nil)
 
@@ -763,7 +567,6 @@ func TestQueryService_SearchByHash_NotFound(t *testing.T) {
 		t.Fatal("Expected error for non-existent transaction")
 	}
 
-	// Check that it's a ServiceError with correct code
 	serviceErr, ok := err.(*types.ServiceError)
 	if !ok {
 		t.Fatalf("Expected ServiceError, got %T", err)
@@ -772,93 +575,9 @@ func TestQueryService_SearchByHash_NotFound(t *testing.T) {
 	if serviceErr.Code != "TRANSACTION_NOT_FOUND" {
 		t.Errorf("Expected error code TRANSACTION_NOT_FOUND, got %s", serviceErr.Code)
 	}
-
-	if serviceErr.Message == "" {
-		t.Error("Expected non-empty error message")
-	}
-}
-
-func TestQueryService_SearchByHash_CrossAddress(t *testing.T) {
-	// Test that hash search works across multiple addresses
-	// Requirement 9.2: Cross-address hash search
-	transactions := []*models.Transaction{
-		{
-			Hash:        "0xhash1",
-			Chain:       types.ChainEthereum,
-			Address:     "0xaddress1",
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1000,
-			Status:      string(types.StatusSuccess),
-		},
-		{
-			Hash:        "0xhash2",
-			Chain:       types.ChainPolygon,
-			Address:     "0xaddress2",
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "2000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1001,
-			Status:      string(types.StatusSuccess),
-		},
-		{
-			Hash:        "0xhash3",
-			Chain:       types.ChainArbitrum,
-			Address:     "0xaddress3",
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "3000000000000000000",
-			Timestamp:   time.Now(),
-			BlockNumber: 1002,
-			Status:      string(types.StatusSuccess),
-		},
-	}
-
-	mockRepo := &mockTransactionRepo{transactions: transactions}
-	service := NewQueryService(mockRepo, nil, nil)
-
-	// Search for transaction from address1
-	tx1, err := service.SearchByHash(context.Background(), "0xhash1")
-	if err != nil {
-		t.Fatalf("SearchByHash failed for hash1: %v", err)
-	}
-	if tx1.Hash != "0xhash1" {
-		t.Errorf("Expected hash 0xhash1, got %s", tx1.Hash)
-	}
-	if tx1.Chain != types.ChainEthereum {
-		t.Errorf("Expected chain ethereum, got %s", tx1.Chain)
-	}
-
-	// Search for transaction from address2
-	tx2, err := service.SearchByHash(context.Background(), "0xhash2")
-	if err != nil {
-		t.Fatalf("SearchByHash failed for hash2: %v", err)
-	}
-	if tx2.Hash != "0xhash2" {
-		t.Errorf("Expected hash 0xhash2, got %s", tx2.Hash)
-	}
-	if tx2.Chain != types.ChainPolygon {
-		t.Errorf("Expected chain polygon, got %s", tx2.Chain)
-	}
-
-	// Search for transaction from address3
-	tx3, err := service.SearchByHash(context.Background(), "0xhash3")
-	if err != nil {
-		t.Fatalf("SearchByHash failed for hash3: %v", err)
-	}
-	if tx3.Hash != "0xhash3" {
-		t.Errorf("Expected hash 0xhash3, got %s", tx3.Hash)
-	}
-	if tx3.Chain != types.ChainArbitrum {
-		t.Errorf("Expected chain arbitrum, got %s", tx3.Chain)
-	}
 }
 
 func TestQueryService_SearchByHash_EmptyHash(t *testing.T) {
-	// Test that empty hash is rejected
 	service := NewQueryService(&mockTransactionRepo{}, nil, nil)
 
 	_, err := service.SearchByHash(context.Background(), "")

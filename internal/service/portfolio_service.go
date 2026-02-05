@@ -186,16 +186,16 @@ func (s *PortfolioService) CreatePortfolio(ctx context.Context, input *CreatePor
 		if err != nil {
 			return nil, fmt.Errorf("failed to check address existence: %w", err)
 		}
-		
+
 		// If address doesn't exist, add it to the system
 		if !exists {
 			addInput := &AddAddressInput{
 				UserID:  input.UserID,
 				Address: addr,
 				Chains:  []types.ChainID{}, // Use default enabled chains
-				Tier:    "",                 // Use user's tier
+				Tier:    "",                // Use user's tier
 			}
-			
+
 			_, err := s.addressService.AddAddress(ctx, addInput)
 			if err != nil {
 				return nil, fmt.Errorf("failed to add address %s: %w", addr, err)
@@ -233,7 +233,7 @@ func (s *PortfolioService) GetPortfolio(ctx context.Context, portfolioID, userID
 		}
 	}
 
-	// Build portfolio view with aggregated data
+	// Build portfolio view with basic data (no expensive RPC calls)
 	view := &PortfolioView{
 		ID:          portfolio.ID,
 		Name:        portfolio.Name,
@@ -242,40 +242,14 @@ func (s *PortfolioService) GetPortfolio(ctx context.Context, portfolioID, userID
 		LastUpdated: portfolio.UpdatedAt,
 	}
 
-	// Get aggregated balance (Requirement 13.3, 15.1)
-	balance, err := s.aggregateBalance(ctx, portfolio.Addresses)
-	if err != nil {
-		// Log error but don't fail the request
-		fmt.Printf("Warning: failed to aggregate balance for portfolio %s: %v\n", portfolioID, err)
-		balance = types.MultiChainBalance{Chains: []types.ChainBalance{}}
-	}
-	view.TotalBalance = balance
-
-	// Get unified timeline (Requirement 13.4)
-	timeline, err := s.mergeTimeline(ctx, portfolio.Addresses, 50) // Default to 50 most recent transactions
-	if err != nil {
-		// Log error but don't fail the request
-		fmt.Printf("Warning: failed to merge timeline for portfolio %s: %v\n", portfolioID, err)
-		timeline = []*types.NormalizedTransaction{}
-	}
-	view.UnifiedTimeline = timeline
-
-	// Get statistics (Requirements 15.2, 15.3, 15.4, 15.5)
-	stats, err := s.calculateStatistics(ctx, portfolio.Addresses)
-	if err != nil {
-		// Log error but don't fail the request
-		fmt.Printf("Warning: failed to calculate statistics for portfolio %s: %v\n", portfolioID, err)
-		stats = &portfolioStats{
-			transactionCount:  0,
-			totalVolume:       "0",
-			topCounterparties: []types.Counterparty{},
-			tokenHoldings:     []types.TokenHolding{},
-		}
-	}
-	view.TransactionCount = stats.transactionCount
-	view.TotalVolume = stats.totalVolume
-	view.TopCounterparties = stats.topCounterparties
-	view.TokenHoldings = stats.tokenHoldings
+	// Return basic view - balance/timeline/stats available via separate endpoints
+	// This avoids expensive RPC calls for simple portfolio lookups
+	view.TotalBalance = types.MultiChainBalance{Chains: []types.ChainBalance{}}
+	view.UnifiedTimeline = []*types.NormalizedTransaction{}
+	view.TransactionCount = 0
+	view.TotalVolume = "0"
+	view.TopCounterparties = []types.Counterparty{}
+	view.TokenHoldings = []types.TokenHolding{}
 
 	return view, nil
 }
@@ -643,20 +617,29 @@ func (s *PortfolioService) mergeTimeline(ctx context.Context, addresses []string
 	// Convert models.Transaction to types.NormalizedTransaction
 	normalized := make([]*types.NormalizedTransaction, len(transactions))
 	for i, tx := range transactions {
+		var gasUsed, gasPrice, methodID *string
+		if tx.GasUsed != "" {
+			gasUsed = &tx.GasUsed
+		}
+		if tx.GasPrice != "" {
+			gasPrice = &tx.GasPrice
+		}
+		if tx.MethodID != "" {
+			methodID = &tx.MethodID
+		}
+
 		normalized[i] = &types.NormalizedTransaction{
-			Hash:           tx.Hash,
-			Chain:          tx.Chain,
-			From:           tx.From,
-			To:             tx.To,
-			Value:          tx.Value,
-			Timestamp:      tx.Timestamp.Unix(),
-			BlockNumber:    tx.BlockNumber,
-			Status:         types.TransactionStatus(tx.Status),
-			GasUsed:        tx.GasUsed,
-			GasPrice:       tx.GasPrice,
-			TokenTransfers: tx.TokenTransfers,
-			MethodID:       tx.MethodID,
-			Input:          tx.Input,
+			Hash:        tx.TxHash,
+			Chain:       tx.Chain,
+			From:        tx.TxFrom,
+			To:          tx.TxTo,
+			Value:       tx.Value,
+			Timestamp:   tx.Timestamp.Unix(),
+			BlockNumber: tx.BlockNumber,
+			Status:      types.TransactionStatus(tx.Status),
+			GasUsed:     gasUsed,
+			GasPrice:    gasPrice,
+			MethodID:    methodID,
 		}
 	}
 
@@ -687,12 +670,12 @@ func (s *PortfolioService) sortTransactionsByTimestamp(transactions []*types.Nor
 
 // portfolioStats holds calculated statistics
 type portfolioStats struct {
-	transactionCount   int64
-	totalVolume        string
-	topCounterparties  []types.Counterparty
-	tokenHoldings      []types.TokenHolding
-	chainDistribution  []ChainDistribution
-	activityByDay      []ActivityByDay
+	transactionCount  int64
+	totalVolume       string
+	topCounterparties []types.Counterparty
+	tokenHoldings     []types.TokenHolding
+	chainDistribution []ChainDistribution
+	activityByDay     []ActivityByDay
 }
 
 // calculateStatistics calculates aggregated statistics for portfolio addresses
@@ -700,12 +683,12 @@ type portfolioStats struct {
 func (s *PortfolioService) calculateStatistics(ctx context.Context, addresses []string) (*portfolioStats, error) {
 	if len(addresses) == 0 {
 		return &portfolioStats{
-			transactionCount:   0,
-			totalVolume:        "0",
-			topCounterparties:  []types.Counterparty{},
-			tokenHoldings:      []types.TokenHolding{},
-			chainDistribution:  []ChainDistribution{},
-			activityByDay:      []ActivityByDay{},
+			transactionCount:  0,
+			totalVolume:       "0",
+			topCounterparties: []types.Counterparty{},
+			tokenHoldings:     []types.TokenHolding{},
+			chainDistribution: []ChainDistribution{},
+			activityByDay:     []ActivityByDay{},
 		}, nil
 	}
 
@@ -740,12 +723,12 @@ func (s *PortfolioService) calculateStatistics(ctx context.Context, addresses []
 	activityByDay := s.calculateActivityByDay(transactions)
 
 	return &portfolioStats{
-		transactionCount:   transactionCount,
-		totalVolume:        totalVolume,
-		topCounterparties:  topCounterparties,
-		tokenHoldings:      tokenHoldings,
-		chainDistribution:  chainDistribution,
-		activityByDay:      activityByDay,
+		transactionCount:  transactionCount,
+		totalVolume:       totalVolume,
+		topCounterparties: topCounterparties,
+		tokenHoldings:     tokenHoldings,
+		chainDistribution: chainDistribution,
+		activityByDay:     activityByDay,
 	}, nil
 }
 
@@ -780,10 +763,10 @@ func (s *PortfolioService) identifyTopCounterparties(transactions []*models.Tran
 	for _, tx := range transactions {
 		// Determine counterparty (the address that's NOT in the portfolio)
 		var counterpartyAddr string
-		if addressSet[tx.From] {
-			counterpartyAddr = tx.To
+		if addressSet[tx.TxFrom] {
+			counterpartyAddr = tx.TxTo
 		} else {
-			counterpartyAddr = tx.From
+			counterpartyAddr = tx.TxFrom
 		}
 
 		if counterpartyAddr == "" {
@@ -842,52 +825,36 @@ func (s *PortfolioService) aggregateTokenHoldings(transactions []*models.Transac
 	tokenMap := make(map[string]*types.TokenHolding)
 
 	for _, tx := range transactions {
-		// Process token transfers in the transaction
-		for _, transfer := range tx.TokenTransfers {
-			if transfer.Token == "" {
-				continue
-			}
+		// Skip non-token transfers
+		if tx.TransferType == types.TransferTypeNative || tx.TokenAddress == "" {
+			continue
+		}
 
-			// Initialize token holding if not exists
-			if tokenMap[transfer.Token] == nil {
-				symbol := "UNKNOWN"
-				if transfer.Symbol != nil {
-					symbol = *transfer.Symbol
-				}
-
-				decimals := 18 // Default decimals
-				if transfer.Decimals != nil {
-					decimals = *transfer.Decimals
-				}
-
-				tokenMap[transfer.Token] = &types.TokenHolding{
-					Token:    transfer.Token,
-					Symbol:   symbol,
-					Balance:  "0",
-					Decimals: decimals,
-					Chains:   []types.ChainID{tx.Chain},
-					ValueUSD: nil,
-				}
-			}
-
-			// Add chain if not already present
-			chainExists := false
-			for _, chain := range tokenMap[transfer.Token].Chains {
-				if chain == tx.Chain {
-					chainExists = true
-					break
-				}
-			}
-			if !chainExists {
-				tokenMap[transfer.Token].Chains = append(tokenMap[transfer.Token].Chains, tx.Chain)
-			}
-
-			// TODO: Calculate actual balance by tracking inflows/outflows
-			// For MVP, just mark that we've seen this token
-			if transfer.Value != "" && transfer.Value != "0" {
-				tokenMap[transfer.Token].Balance = transfer.Value
+		// Initialize token holding if not exists
+		if tokenMap[tx.TokenAddress] == nil {
+			tokenMap[tx.TokenAddress] = &types.TokenHolding{
+				Token:    tx.TokenAddress,
+				Symbol:   tx.TokenSymbol,
+				Balance:  "0",
+				Decimals: int(tx.TokenDecimals),
+				Chains:   []types.ChainID{tx.Chain},
+				ValueUSD: nil,
 			}
 		}
+
+		// Add chain if not already present
+		chainExists := false
+		for _, chain := range tokenMap[tx.TokenAddress].Chains {
+			if chain == tx.Chain {
+				chainExists = true
+				break
+			}
+		}
+		if !chainExists {
+			tokenMap[tx.TokenAddress].Chains = append(tokenMap[tx.TokenAddress].Chains, tx.Chain)
+		}
+
+		// TODO: Calculate balance using big.Int based on direction
 	}
 
 	// Convert map to slice

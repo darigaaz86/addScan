@@ -13,9 +13,9 @@ import (
 
 // TimelineService handles multi-chain timeline aggregation
 type TimelineService struct {
-	transactionRepo       *storage.TransactionRepository
-	unifiedTimelineRepo   *storage.UnifiedTimelineRepository
-	cacheService          *storage.CacheService
+	transactionRepo        *storage.TransactionRepository
+	unifiedTimelineRepo    *storage.UnifiedTimelineRepository
+	cacheService           *storage.CacheService
 	usePrecomputedTimeline bool // Feature flag to enable/disable pre-computed timeline
 }
 
@@ -26,23 +26,21 @@ func NewTimelineService(
 	cacheService *storage.CacheService,
 ) *TimelineService {
 	return &TimelineService{
-		transactionRepo:       transactionRepo,
-		unifiedTimelineRepo:   unifiedTimelineRepo,
-		cacheService:          cacheService,
+		transactionRepo:        transactionRepo,
+		unifiedTimelineRepo:    unifiedTimelineRepo,
+		cacheService:           cacheService,
 		usePrecomputedTimeline: true, // Enable by default
 	}
 }
 
 // TimelineFilters defines filters for timeline queries
 type TimelineFilters struct {
-	Chains    []types.ChainID
-	DateFrom  *time.Time
-	DateTo    *time.Time
-	MinValue  *float64
-	MaxValue  *float64
-	Status    *types.TransactionStatus
-	Limit     int
-	Offset    int
+	Chains   []types.ChainID
+	DateFrom *time.Time
+	DateTo   *time.Time
+	Status   *types.TransactionStatus
+	Limit    int
+	Offset   int
 }
 
 // TimelineResult represents the result of a timeline query
@@ -222,20 +220,29 @@ func (s *TimelineService) mergeAndSortTransactions(transactions []*types.Normali
 func (s *TimelineService) convertToNormalizedTransactions(transactions []*models.Transaction) []*types.NormalizedTransaction {
 	normalized := make([]*types.NormalizedTransaction, len(transactions))
 	for i, tx := range transactions {
+		var gasUsed, gasPrice, methodID *string
+		if tx.GasUsed != "" {
+			gasUsed = &tx.GasUsed
+		}
+		if tx.GasPrice != "" {
+			gasPrice = &tx.GasPrice
+		}
+		if tx.MethodID != "" {
+			methodID = &tx.MethodID
+		}
+
 		normalized[i] = &types.NormalizedTransaction{
-			Hash:           tx.Hash,
-			Chain:          tx.Chain,
-			From:           tx.From,
-			To:             tx.To,
-			Value:          tx.Value,
-			Timestamp:      tx.Timestamp.Unix(), // Convert to Unix timestamp
-			BlockNumber:    tx.BlockNumber,
-			Status:         types.TransactionStatus(tx.Status),
-			GasUsed:        tx.GasUsed,
-			GasPrice:       tx.GasPrice,
-			TokenTransfers: tx.TokenTransfers,
-			MethodID:       tx.MethodID,
-			Input:          tx.Input,
+			Hash:        tx.TxHash,
+			Chain:       tx.Chain,
+			From:        tx.TxFrom,
+			To:          tx.TxTo,
+			Value:       tx.Value,
+			Timestamp:   tx.Timestamp.Unix(), // Convert to Unix timestamp
+			BlockNumber: tx.BlockNumber,
+			Status:      types.TransactionStatus(tx.Status),
+			GasUsed:     gasUsed,
+			GasPrice:    gasPrice,
+			MethodID:    methodID,
 		}
 	}
 	return normalized
@@ -254,8 +261,6 @@ func (s *TimelineService) convertToStorageFilters(filters *TimelineFilters) *sto
 		Chains:    filters.Chains,
 		DateFrom:  filters.DateFrom,
 		DateTo:    filters.DateTo,
-		MinValue:  filters.MinValue,
-		MaxValue:  filters.MaxValue,
 		Status:    filters.Status,
 		SortBy:    "timestamp",
 		SortOrder: "desc",

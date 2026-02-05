@@ -148,15 +148,19 @@ func TestQueryService_PerformanceMonitoring(t *testing.T) {
 	transactions := make([]*models.Transaction, 100)
 	for i := 0; i < 100; i++ {
 		transactions[i] = &models.Transaction{
-			Hash:        "0xhash" + string(rune(i)),
-			Chain:       types.ChainEthereum,
-			Address:     "0x1234567890123456789012345678901234567890",
-			From:        "0xfrom",
-			To:          "0xto",
-			Value:       "1000000000000000000",
-			Timestamp:   time.Now().Add(-time.Duration(i) * time.Hour),
-			BlockNumber: uint64(1000 + i),
-			Status:      "success",
+			TxHash:       "0xhash" + string(rune(i)),
+			Chain:        types.ChainEthereum,
+			Address:      "0x1234567890123456789012345678901234567890",
+			TxFrom:       "0xfrom",
+			TxTo:         "0xto",
+			TransferType: types.TransferTypeNative,
+			TransferFrom: "0xfrom",
+			TransferTo:   "0xto",
+			Value:        "1000000000000000000",
+			Direction:    types.DirectionIn,
+			Timestamp:    time.Now().Add(-time.Duration(i) * time.Hour),
+			BlockNumber:  uint64(1000 + i),
+			Status:       "success",
 		}
 	}
 

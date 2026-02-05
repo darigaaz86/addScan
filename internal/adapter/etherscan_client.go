@@ -247,35 +247,35 @@ func (c *EtherscanClient) FetchAllTransactions(ctx context.Context, address stri
 	chainID := c.GetChainID(chain)
 
 	// 1. Fetch normal transactions (external)
-	normalTxs, err := c.fetchTransactionList(ctx, address, chainID, "txlist")
+	normalTxs, err := c.fetchTransactionList(ctx, address, chain, chainID, "txlist")
 	if err != nil {
 		log.Printf("[Etherscan] Warning: failed to fetch normal transactions: %v", err)
 		normalTxs = []*types.NormalizedTransaction{}
 	}
 
 	// 2. Fetch internal transactions
-	internalTxs, err := c.fetchTransactionList(ctx, address, chainID, "txlistinternal")
+	internalTxs, err := c.fetchTransactionList(ctx, address, chain, chainID, "txlistinternal")
 	if err != nil {
 		log.Printf("[Etherscan] Warning: failed to fetch internal transactions: %v", err)
 		internalTxs = []*types.NormalizedTransaction{}
 	}
 
 	// 3. Fetch ERC20 token transfers
-	erc20Txs, err := c.fetchTokenTransfers(ctx, address, chainID)
+	erc20Txs, err := c.fetchTokenTransfers(ctx, address, chain, chainID)
 	if err != nil {
 		log.Printf("[Etherscan] Warning: failed to fetch ERC20 transfers: %v", err)
 		erc20Txs = []*types.NormalizedTransaction{}
 	}
 
 	// 4. Fetch ERC721 NFT transfers
-	erc721Txs, err := c.fetchNFTTransfers(ctx, address, chainID)
+	erc721Txs, err := c.fetchNFTTransfers(ctx, address, chain, chainID)
 	if err != nil {
 		log.Printf("[Etherscan] Warning: failed to fetch ERC721 transfers: %v", err)
 		erc721Txs = []*types.NormalizedTransaction{}
 	}
 
 	// 5. Fetch ERC1155 multi-token transfers
-	erc1155Txs, err := c.fetchERC1155Transfers(ctx, address, chainID)
+	erc1155Txs, err := c.fetchERC1155Transfers(ctx, address, chain, chainID)
 	if err != nil {
 		log.Printf("[Etherscan] Warning: failed to fetch ERC1155 transfers: %v", err)
 		erc1155Txs = []*types.NormalizedTransaction{}
@@ -297,7 +297,7 @@ func (c *EtherscanClient) FetchAllTransactions(ctx context.Context, address stri
 }
 
 // fetchTransactionList fetches normal/internal transactions using Etherscan API
-func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address string, chainID int, action string) ([]*types.NormalizedTransaction, error) {
+func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address string, chain types.ChainID, chainID int, action string) ([]*types.NormalizedTransaction, error) {
 	// Throttle requests per chain to avoid 429
 	c.throttle(chainID)
 
@@ -337,10 +337,21 @@ func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address stri
 		return nil, fmt.Errorf("failed to parse transactions: %w", err)
 	}
 
+	isInternal := action == "txlistinternal"
 	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
+
+	// Track trace index per tx hash for internal transactions
+	traceIndexMap := make(map[string]uint32)
+
 	for _, tx := range txList {
-		normalized := c.convertTransaction(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
+		normalized := c.convertTransaction(tx, chain)
 		if normalized != nil {
+			if isInternal {
+				normalized.IsInternal = true
+				// Assign trace index for internal transactions with same hash
+				normalized.TraceIndex = traceIndexMap[tx.Hash]
+				traceIndexMap[tx.Hash]++
+			}
 			transactions = append(transactions, normalized)
 		}
 	}
@@ -349,15 +360,18 @@ func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address stri
 }
 
 // fetchTokenTransfers fetches ERC20 token transfers
-func (c *EtherscanClient) fetchTokenTransfers(ctx context.Context, address string, chainID int) ([]*types.NormalizedTransaction, error) {
+func (c *EtherscanClient) fetchTokenTransfers(ctx context.Context, address string, chain types.ChainID, chainID int) ([]*types.NormalizedTransaction, error) {
 	// Throttle requests per chain to avoid 429
 	c.throttle(chainID)
 
 	url := fmt.Sprintf("%s?chainid=%d&module=account&action=tokentx&address=%s&sort=desc&apikey=%s",
 		c.baseURL, chainID, address, c.apiKey)
 
+	log.Printf("[Etherscan] Fetching ERC20 transfers for %s on chain %d", address, chainID)
+
 	body, err := c.doRequest(ctx, url, chainID)
 	if err != nil {
+		log.Printf("[Etherscan] ERC20 request failed for %s: %v", address, err)
 		return nil, err
 	}
 
@@ -368,28 +382,36 @@ func (c *EtherscanClient) fetchTokenTransfers(ctx context.Context, address strin
 		Result  json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(body, &rawResp); err != nil {
+		log.Printf("[Etherscan] ERC20 parse failed for %s: %v", address, err)
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	log.Printf("[Etherscan] ERC20 response for %s: status=%s, message=%s, result_len=%d", address, rawResp.Status, rawResp.Message, len(rawResp.Result))
+
 	if rawResp.Status != "1" {
 		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" || rawResp.Message == "NOTOK" {
+			log.Printf("[Etherscan] ERC20 no records for %s: %s", address, rawResp.Message)
 			return []*types.NormalizedTransaction{}, nil
 		}
 		return nil, fmt.Errorf("etherscan API error: %s", rawResp.Message)
 	}
 
 	if len(rawResp.Result) > 0 && rawResp.Result[0] == '"' {
+		log.Printf("[Etherscan] ERC20 result is string for %s", address)
 		return []*types.NormalizedTransaction{}, nil
 	}
 
 	var txList []EtherscanTokenTransfer
 	if err := json.Unmarshal(rawResp.Result, &txList); err != nil {
+		log.Printf("[Etherscan] ERC20 unmarshal failed for %s: %v, body: %s", address, err, string(rawResp.Result[:min(200, len(rawResp.Result))]))
 		return nil, fmt.Errorf("failed to parse token transfers: %w", err)
 	}
 
+	log.Printf("[Etherscan] ERC20 parsed %d transfers for %s", len(txList), address)
+
 	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
 	for _, tx := range txList {
-		normalized := c.convertTokenTransfer(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
+		normalized := c.convertTokenTransfer(tx, chain)
 		if normalized != nil {
 			transactions = append(transactions, normalized)
 		}
@@ -399,7 +421,7 @@ func (c *EtherscanClient) fetchTokenTransfers(ctx context.Context, address strin
 }
 
 // fetchNFTTransfers fetches ERC721 NFT transfers
-func (c *EtherscanClient) fetchNFTTransfers(ctx context.Context, address string, chainID int) ([]*types.NormalizedTransaction, error) {
+func (c *EtherscanClient) fetchNFTTransfers(ctx context.Context, address string, chain types.ChainID, chainID int) ([]*types.NormalizedTransaction, error) {
 	// Throttle requests per chain to avoid 429
 	c.throttle(chainID)
 
@@ -439,7 +461,7 @@ func (c *EtherscanClient) fetchNFTTransfers(ctx context.Context, address string,
 
 	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
 	for _, tx := range txList {
-		normalized := c.convertNFTTransfer(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
+		normalized := c.convertNFTTransfer(tx, chain)
 		if normalized != nil {
 			transactions = append(transactions, normalized)
 		}
@@ -449,7 +471,7 @@ func (c *EtherscanClient) fetchNFTTransfers(ctx context.Context, address string,
 }
 
 // fetchERC1155Transfers fetches ERC1155 multi-token transfers
-func (c *EtherscanClient) fetchERC1155Transfers(ctx context.Context, address string, chainID int) ([]*types.NormalizedTransaction, error) {
+func (c *EtherscanClient) fetchERC1155Transfers(ctx context.Context, address string, chain types.ChainID, chainID int) ([]*types.NormalizedTransaction, error) {
 	// Throttle requests per chain to avoid 429
 	c.throttle(chainID)
 
@@ -489,7 +511,7 @@ func (c *EtherscanClient) fetchERC1155Transfers(ctx context.Context, address str
 
 	transactions := make([]*types.NormalizedTransaction, 0, len(txList))
 	for _, tx := range txList {
-		normalized := c.convertERC1155Transfer(tx, types.ChainID(fmt.Sprintf("%d", chainID)))
+		normalized := c.convertERC1155Transfer(tx, chain)
 		if normalized != nil {
 			transactions = append(transactions, normalized)
 		}
@@ -593,8 +615,17 @@ func (c *EtherscanClient) convertTransaction(tx EtherscanTransaction, chain type
 	}
 
 	// Set status
-	if tx.IsError == "0" && tx.TxReceiptStatus == "1" {
-		normalized.Status = types.StatusSuccess
+	// For normal transactions: IsError="0" AND TxReceiptStatus="1" means success
+	// For internal transactions: TxReceiptStatus is empty, so only check IsError
+	// Internal transactions don't have their own receipt - they succeed if IsError="0"
+	if tx.IsError == "0" {
+		// For normal transactions, also verify receipt status
+		// For internal transactions (TxReceiptStatus is empty), IsError="0" is sufficient
+		if tx.TxReceiptStatus == "" || tx.TxReceiptStatus == "1" {
+			normalized.Status = types.StatusSuccess
+		} else {
+			normalized.Status = types.StatusFailed
+		}
 	} else {
 		normalized.Status = types.StatusFailed
 	}
@@ -644,7 +675,7 @@ func (c *EtherscanClient) convertTokenTransfer(tx EtherscanTokenTransfer, chain 
 		Chain:       chain,
 		From:        tx.From,
 		To:          tx.To,
-		Value:       tx.Value,
+		Value:       "0", // Native ETH value is 0 for token transfers
 		Asset:       &symbol,
 		Category:    &category,
 		BlockNumber: blockNum,
@@ -685,13 +716,14 @@ func (c *EtherscanClient) convertNFTTransfer(tx EtherscanNFTTransfer, chain type
 
 	category := "erc721"
 	symbol := tx.TokenSymbol
+	tokenID := tx.TokenID
 
 	normalized := &types.NormalizedTransaction{
 		Hash:        tx.Hash,
 		Chain:       chain,
 		From:        tx.From,
 		To:          tx.To,
-		Value:       "1", // NFT is always 1
+		Value:       "0", // Native ETH value is 0 for NFT transfers
 		Asset:       &symbol,
 		Category:    &category,
 		BlockNumber: blockNum,
@@ -699,11 +731,12 @@ func (c *EtherscanClient) convertNFTTransfer(tx EtherscanNFTTransfer, chain type
 		Status:      types.StatusSuccess,
 		TokenTransfers: []types.TokenTransfer{
 			{
-				Token:  tx.ContractAddress,
-				From:   tx.From,
-				To:     tx.To,
-				Value:  tx.TokenID, // Store tokenID as value for NFTs
-				Symbol: &tx.TokenSymbol,
+				Token:   tx.ContractAddress,
+				From:    tx.From,
+				To:      tx.To,
+				Value:   "1", // NFT quantity is always 1
+				Symbol:  &tx.TokenSymbol,
+				TokenID: &tokenID, // Store token ID for NFTs
 			},
 		},
 	}
@@ -731,13 +764,14 @@ func (c *EtherscanClient) convertERC1155Transfer(tx EtherscanERC1155Transfer, ch
 
 	category := "erc1155"
 	symbol := tx.TokenSymbol
+	tokenID := tx.TokenID
 
 	normalized := &types.NormalizedTransaction{
 		Hash:        tx.Hash,
 		Chain:       chain,
 		From:        tx.From,
 		To:          tx.To,
-		Value:       tx.TokenValue,
+		Value:       "0", // Native ETH value is 0 for ERC1155 transfers
 		Asset:       &symbol,
 		Category:    &category,
 		BlockNumber: blockNum,
@@ -745,11 +779,12 @@ func (c *EtherscanClient) convertERC1155Transfer(tx EtherscanERC1155Transfer, ch
 		Status:      types.StatusSuccess,
 		TokenTransfers: []types.TokenTransfer{
 			{
-				Token:  tx.ContractAddress,
-				From:   tx.From,
-				To:     tx.To,
-				Value:  tx.TokenValue,
-				Symbol: &tx.TokenSymbol,
+				Token:   tx.ContractAddress,
+				From:    tx.From,
+				To:      tx.To,
+				Value:   tx.TokenValue,
+				Symbol:  &tx.TokenSymbol,
+				TokenID: &tokenID, // Store token ID for ERC1155
 			},
 		},
 	}

@@ -1063,13 +1063,19 @@ func (a *EthereumAdapter) Close() {
 
 // AlchemyAssetTransfer represents a transfer from Alchemy's API
 type AlchemyAssetTransfer struct {
-	BlockNum    string      `json:"blockNum"`
-	Hash        string      `json:"hash"`
-	From        string      `json:"from"`
-	To          *string     `json:"to"`
-	Value       interface{} `json:"value"` // Can be string or number
-	Asset       *string     `json:"asset"`
-	Category    string      `json:"category"`
+	BlockNum        string      `json:"blockNum"`
+	Hash            string      `json:"hash"`
+	From            string      `json:"from"`
+	To              *string     `json:"to"`
+	Value           interface{} `json:"value"` // Can be string or number
+	Asset           *string     `json:"asset"`
+	Category        string      `json:"category"`
+	TokenID         *string     `json:"tokenId"`       // Token ID for NFTs
+	ERC721TokenID   *string     `json:"erc721TokenId"` // ERC721 specific token ID
+	ERC1155Metadata []struct {
+		TokenID string `json:"tokenId"`
+		Value   string `json:"value"`
+	} `json:"erc1155Metadata"` // ERC1155 metadata with token IDs
 	RawContract struct {
 		Value   interface{} `json:"value"` // Can be string or number
 		Address *string     `json:"address"`
@@ -1433,6 +1439,15 @@ func convertAlchemyTransferToTransaction(transfer AlchemyAssetTransfer, chainID 
 					d := int(decimal)
 					tokenTransfer.Decimals = &d
 				}
+			}
+			// Extract token ID for NFTs
+			if transfer.TokenID != nil && *transfer.TokenID != "" {
+				tokenTransfer.TokenID = transfer.TokenID
+			} else if transfer.ERC721TokenID != nil && *transfer.ERC721TokenID != "" {
+				tokenTransfer.TokenID = transfer.ERC721TokenID
+			} else if len(transfer.ERC1155Metadata) > 0 {
+				// For ERC1155, use the first token ID
+				tokenTransfer.TokenID = &transfer.ERC1155Metadata[0].TokenID
 			}
 			tx.TokenTransfers = []types.TokenTransfer{tokenTransfer}
 		}

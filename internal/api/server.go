@@ -35,7 +35,7 @@ type PortfolioServiceInterface interface {
 // QueryServiceInterface defines the interface for query service operations
 type QueryServiceInterface interface {
 	Query(ctx context.Context, input *service.QueryInput) (*service.QueryResult, error)
-	SearchByHash(ctx context.Context, hash string) (*types.NormalizedTransaction, error)
+	SearchByHash(ctx context.Context, hash string) ([]*types.NormalizedTransaction, error)
 }
 
 // SnapshotServiceInterface defines the interface for snapshot service operations
@@ -43,17 +43,40 @@ type SnapshotServiceInterface interface {
 	GetSnapshots(ctx context.Context, portfolioID, userID string, from, to time.Time) ([]*models.PortfolioSnapshot, error)
 }
 
+// BalanceSnapshotServiceInterface defines the interface for balance snapshot operations
+type BalanceSnapshotServiceInterface interface {
+	GetBalanceHistory(ctx context.Context, address, chain string, from, to time.Time) ([]storage.NativeBalanceSnapshot, error)
+	GetPortfolioHistory(ctx context.Context, portfolioID string, from, to time.Time) ([]storage.PortfolioDailySummary, error)
+}
+
+// DeFiDetectorInterface defines the interface for DeFi detection operations
+type DeFiDetectorInterface interface {
+	DetectInteractions(ctx context.Context, address string, chain types.ChainID, limit int) ([]service.DeFiInteraction, error)
+	GetProtocolActivity(ctx context.Context, address string, chain types.ChainID) (map[string]*service.ProtocolActivity, error)
+}
+
+// PositionServiceInterface defines the interface for position service operations
+type PositionServiceInterface interface {
+	GetAddressBalances(ctx context.Context, address string, chain types.ChainID) (*service.AddressBalances, error)
+	GetAddressAllChains(ctx context.Context, address string, chains []types.ChainID) (map[string]*service.AddressBalances, error)
+	GetProtocolPositions(ctx context.Context, address string, chain types.ChainID) ([]service.ProtocolPosition, error)
+	GetPortfolioBalances(ctx context.Context, addresses []string, chains []types.ChainID) (*service.PortfolioBalances, error)
+}
+
 // Server represents the HTTP API server.
 type Server struct {
-	router           *mux.Router
-	httpServer       *http.Server
-	addressService   AddressServiceInterface
-	portfolioService PortfolioServiceInterface
-	queryService     QueryServiceInterface
-	snapshotService  SnapshotServiceInterface
-	userRepo         *storage.UserRepository
-	goldskyRepo      *storage.GoldskyRepository
-	config           *ServerConfig
+	router                 *mux.Router
+	httpServer             *http.Server
+	addressService         AddressServiceInterface
+	portfolioService       PortfolioServiceInterface
+	queryService           QueryServiceInterface
+	snapshotService        SnapshotServiceInterface
+	balanceSnapshotService BalanceSnapshotServiceInterface
+	positionService        PositionServiceInterface
+	defiDetector           DeFiDetectorInterface
+	userRepo               *storage.UserRepository
+	goldskyRepo            *storage.GoldskyRepository
+	config                 *ServerConfig
 }
 
 // ServerConfig holds server configuration.
@@ -76,18 +99,24 @@ func NewServer(
 	portfolioService *service.PortfolioService,
 	queryService *service.QueryService,
 	snapshotService *service.SnapshotService,
+	balanceSnapshotService *service.BalanceSnapshotService,
+	positionService *service.PositionService,
+	defiDetector *service.DeFiDetector,
 	userRepo *storage.UserRepository,
 	goldskyRepo *storage.GoldskyRepository,
 ) *Server {
 	s := &Server{
-		router:           mux.NewRouter(),
-		addressService:   addressService,
-		portfolioService: portfolioService,
-		queryService:     queryService,
-		snapshotService:  snapshotService,
-		userRepo:         userRepo,
-		goldskyRepo:      goldskyRepo,
-		config:           config,
+		router:                 mux.NewRouter(),
+		addressService:         addressService,
+		portfolioService:       portfolioService,
+		queryService:           queryService,
+		snapshotService:        snapshotService,
+		balanceSnapshotService: balanceSnapshotService,
+		positionService:        positionService,
+		defiDetector:           defiDetector,
+		userRepo:               userRepo,
+		goldskyRepo:            goldskyRepo,
+		config:                 config,
 	}
 
 	s.setupRouter()
@@ -145,6 +174,18 @@ func (s *Server) setupRoutes() {
 
 	// Search endpoints
 	api.HandleFunc("/search/transaction/{hash}", s.handleSearchTransaction).Methods("GET")
+
+	// Balance endpoints (DeBank-aligned)
+	api.HandleFunc("/addresses/{address}/balances", s.handleGetAddressBalances).Methods("GET")
+	api.HandleFunc("/addresses/{address}/balances/all", s.handleGetAddressAllChainBalances).Methods("GET")
+	api.HandleFunc("/addresses/{address}/protocols", s.handleGetAddressProtocols).Methods("GET")
+	api.HandleFunc("/portfolios/{id}/balances", s.handleGetPortfolioBalances).Methods("GET")
+	api.HandleFunc("/portfolios/{id}/protocols", s.handleGetPortfolioProtocols).Methods("GET")
+	api.HandleFunc("/portfolios/{id}/holdings", s.handleGetPortfolioHoldings).Methods("GET")
+	api.HandleFunc("/portfolios/{id}/history", s.handleGetPortfolioHistory).Methods("GET")
+	api.HandleFunc("/addresses/{address}/history", s.handleGetAddressBalanceHistory).Methods("GET")
+	api.HandleFunc("/addresses/{address}/defi", s.handleGetAddressDeFiActivity).Methods("GET")
+	api.HandleFunc("/addresses/{address}/defi/interactions", s.handleGetAddressDeFiInteractions).Methods("GET")
 
 	// User endpoints
 	api.HandleFunc("/users", s.handleCreateUser).Methods("POST")

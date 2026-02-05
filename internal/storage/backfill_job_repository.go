@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/address-scanner/internal/models"
+	"github.com/address-scanner/internal/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -297,6 +298,59 @@ func (r *BackfillJobRepository) ListByAddress(ctx context.Context, address strin
 // GetQueuedJobs retrieves queued jobs ordered by priority
 func (r *BackfillJobRepository) GetQueuedJobs(ctx context.Context, limit int) ([]*models.BackfillJobRecord, error) {
 	return r.ListByStatus(ctx, "queued", limit)
+}
+
+// GetQueuedJobsForChain retrieves queued jobs for a specific chain ordered by priority
+func (r *BackfillJobRepository) GetQueuedJobsForChain(ctx context.Context, chain types.ChainID, limit int) ([]*models.BackfillJobRecord, error) {
+	query := `
+		SELECT job_id, address, chain, tier, status, priority,
+			   transactions_fetched, started_at, completed_at, error, retry_count
+		FROM backfill_jobs
+		WHERE status = 'queued' AND chain = $1
+		ORDER BY priority DESC, started_at ASC
+		LIMIT $2
+	`
+
+	rows, err := r.db.Pool().Query(ctx, query, string(chain), limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list queued jobs for chain %s: %w", chain, err)
+	}
+	defer rows.Close()
+
+	var jobs []*models.BackfillJobRecord
+	for rows.Next() {
+		var job models.BackfillJobRecord
+		var completedAt *time.Time
+		var errorMsg *string
+
+		err := rows.Scan(
+			&job.JobID,
+			&job.Address,
+			&job.Chain,
+			&job.Tier,
+			&job.Status,
+			&job.Priority,
+			&job.TransactionsFetched,
+			&job.StartedAt,
+			&completedAt,
+			&errorMsg,
+			&job.RetryCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan backfill job: %w", err)
+		}
+
+		job.CompletedAt = completedAt
+		job.Error = errorMsg
+
+		jobs = append(jobs, &job)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating backfill jobs: %w", err)
+	}
+
+	return jobs, nil
 }
 
 // UpdateStatus updates the status of a backfill job

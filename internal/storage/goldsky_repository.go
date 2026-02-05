@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/address-scanner/internal/types"
 )
 
 // GoldskyTrace represents a trace from Goldsky
@@ -72,10 +74,8 @@ func (r *GoldskyRepository) InsertTraces(ctx context.Context, traces []GoldskyTr
 			valueStr = t.Value.String()
 		}
 
-		chain := t.Chain
-		if chain == "" {
-			chain = "ethereum"
-		}
+		// Normalize chain ID at insert time
+		chain := string(types.NormalizeChainID(t.Chain))
 
 		err := batch.Append(
 			t.ID,
@@ -116,10 +116,8 @@ func (r *GoldskyRepository) InsertLogs(ctx context.Context, logs []GoldskyLog) e
 	}
 
 	for _, l := range logs {
-		chain := l.Chain
-		if chain == "" {
-			chain = "ethereum"
-		}
+		// Normalize chain ID at insert time
+		chain := string(types.NormalizeChainID(l.Chain))
 
 		amount := l.Amount
 		if amount == "" {
@@ -183,20 +181,28 @@ func (r *GoldskyRepository) GetTracesByAddress(ctx context.Context, address stri
 }
 
 // GetLogsByAddress returns logs for a given address
-func (r *GoldskyRepository) GetLogsByAddress(ctx context.Context, address string, limit int) ([]GoldskyLog, error) {
+func (r *GoldskyRepository) GetLogsByAddress(ctx context.Context, address string, chain string, limit int) ([]GoldskyLog, error) {
 	query := `
 		SELECT id, transaction_hash, block_number, block_timestamp,
 			   contract_address, event_signature, from_address, to_address,
-			   topics, data, log_index
+			   amount, topics, data, log_index, chain
 		FROM goldsky_logs
-		WHERE lower(contract_address) = lower(?) 
+		WHERE (lower(contract_address) = lower(?) 
 		   OR lower(from_address) = lower(?) 
-		   OR lower(to_address) = lower(?)
-		ORDER BY block_number DESC
-		LIMIT ?
+		   OR lower(to_address) = lower(?))
 	`
+	args := []any{address, address, address}
 
-	rows, err := r.db.conn.Query(ctx, query, address, address, address, limit)
+	if chain != "" {
+		// Chain IDs are normalized at insert time
+		query += ` AND chain = ?`
+		args = append(args, string(types.NormalizeChainID(chain)))
+	}
+
+	query += ` ORDER BY block_number DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := r.db.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +214,7 @@ func (r *GoldskyRepository) GetLogsByAddress(ctx context.Context, address string
 		if err := rows.Scan(
 			&l.ID, &l.TransactionHash, &l.BlockNumber, &l.BlockTimestamp,
 			&l.ContractAddress, &l.EventSignature, &l.FromAddress, &l.ToAddress,
-			&l.Topics, &l.Data, &l.LogIndex,
+			&l.Amount, &l.Topics, &l.Data, &l.LogIndex, &l.Chain,
 		); err != nil {
 			return nil, err
 		}

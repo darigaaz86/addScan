@@ -53,10 +53,14 @@ func (iv *ImmutabilityValidator) ValidateTransaction(ctx context.Context, hash s
 	}
 
 	// Fetch current transaction from database
-	currentTx, err := iv.transactionRepo.GetByHash(ctx, hash)
+	currentTxs, err := iv.transactionRepo.GetByHash(ctx, hash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch transaction: %w", err)
 	}
+	if len(currentTxs) == 0 {
+		return nil, fmt.Errorf("transaction not found: %s", hash)
+	}
+	currentTx := currentTxs[0]
 
 	// Calculate confirmations
 	result.Confirmations = currentBlock - currentTx.BlockNumber
@@ -93,20 +97,20 @@ func (iv *ImmutabilityValidator) compareTransactions(original, current *models.T
 	var violations []string
 
 	// Critical fields that must never change
-	if original.Hash != current.Hash {
-		violations = append(violations, fmt.Sprintf("hash changed: %s -> %s", original.Hash, current.Hash))
+	if original.TxHash != current.TxHash {
+		violations = append(violations, fmt.Sprintf("hash changed: %s -> %s", original.TxHash, current.TxHash))
 	}
 
 	if original.Chain != current.Chain {
 		violations = append(violations, fmt.Sprintf("chain changed: %s -> %s", original.Chain, current.Chain))
 	}
 
-	if original.From != current.From {
-		violations = append(violations, fmt.Sprintf("from changed: %s -> %s", original.From, current.From))
+	if original.TxFrom != current.TxFrom {
+		violations = append(violations, fmt.Sprintf("from changed: %s -> %s", original.TxFrom, current.TxFrom))
 	}
 
-	if original.To != current.To {
-		violations = append(violations, fmt.Sprintf("to changed: %s -> %s", original.To, current.To))
+	if original.TxTo != current.TxTo {
+		violations = append(violations, fmt.Sprintf("to changed: %s -> %s", original.TxTo, current.TxTo))
 	}
 
 	if original.Value != current.Value {
@@ -126,17 +130,17 @@ func (iv *ImmutabilityValidator) compareTransactions(original, current *models.T
 	}
 
 	// Gas fields should also be immutable
-	if original.GasUsed != nil && current.GasUsed != nil && *original.GasUsed != *current.GasUsed {
-		violations = append(violations, fmt.Sprintf("gas used changed: %s -> %s", *original.GasUsed, *current.GasUsed))
+	if original.GasUsed != current.GasUsed {
+		violations = append(violations, fmt.Sprintf("gas used changed: %s -> %s", original.GasUsed, current.GasUsed))
 	}
 
-	if original.GasPrice != nil && current.GasPrice != nil && *original.GasPrice != *current.GasPrice {
-		violations = append(violations, fmt.Sprintf("gas price changed: %s -> %s", *original.GasPrice, *current.GasPrice))
+	if original.GasPrice != current.GasPrice {
+		violations = append(violations, fmt.Sprintf("gas price changed: %s -> %s", original.GasPrice, current.GasPrice))
 	}
 
-	// Method ID and input should be immutable
-	if original.MethodID != nil && current.MethodID != nil && *original.MethodID != *current.MethodID {
-		violations = append(violations, fmt.Sprintf("method ID changed: %s -> %s", *original.MethodID, *current.MethodID))
+	// Method ID should be immutable
+	if original.MethodID != current.MethodID {
+		violations = append(violations, fmt.Sprintf("method ID changed: %s -> %s", original.MethodID, current.MethodID))
 	}
 
 	return violations
@@ -174,9 +178,9 @@ func (iv *ImmutabilityValidator) ValidateAddressTransactions(ctx context.Context
 	for _, tx := range transactions {
 		confirmations := currentBlock - tx.BlockNumber
 		if confirmations >= iv.minConfirmations {
-			result, err := iv.ValidateTransaction(ctx, tx.Hash, currentBlock)
+			result, err := iv.ValidateTransaction(ctx, tx.TxHash, currentBlock)
 			if err != nil {
-				log.Printf("Failed to validate transaction %s: %v", tx.Hash, err)
+				log.Printf("Failed to validate transaction %s: %v", tx.TxHash, err)
 				continue
 			}
 			results = append(results, result)
@@ -190,10 +194,14 @@ func (iv *ImmutabilityValidator) ValidateAddressTransactions(ctx context.Context
 // This should be called before any transaction update operation
 func (iv *ImmutabilityValidator) PreventTransactionUpdate(ctx context.Context, hash string, currentBlock uint64) error {
 	// Fetch the transaction
-	tx, err := iv.transactionRepo.GetByHash(ctx, hash)
+	txs, err := iv.transactionRepo.GetByHash(ctx, hash)
 	if err != nil {
 		return fmt.Errorf("failed to fetch transaction: %w", err)
 	}
+	if len(txs) == 0 {
+		return fmt.Errorf("transaction not found: %s", hash)
+	}
+	tx := txs[0]
 
 	// Calculate confirmations
 	confirmations := currentBlock - tx.BlockNumber
@@ -228,7 +236,7 @@ func (iv *ImmutabilityValidator) StartPeriodicValidation(ctx context.Context, ad
 			return
 		case <-ticker.C:
 			log.Println("Running periodic immutability validation")
-			
+
 			violationCount := 0
 			for _, address := range addresses {
 				for _, chain := range chains {
@@ -297,11 +305,12 @@ func (iv *ImmutabilityValidator) GetStats() *ImmutabilityStats {
 // ValidateBeforeInsert ensures a transaction being inserted doesn't conflict with existing confirmed transactions
 func (iv *ImmutabilityValidator) ValidateBeforeInsert(ctx context.Context, tx *models.Transaction, currentBlock uint64) error {
 	// Check if this transaction hash already exists
-	existingTx, err := iv.transactionRepo.GetByHash(ctx, tx.Hash)
-	if err != nil {
+	existingTxs, err := iv.transactionRepo.GetByHash(ctx, tx.TxHash)
+	if err != nil || len(existingTxs) == 0 {
 		// Transaction doesn't exist, safe to insert
 		return nil
 	}
+	existingTx := existingTxs[0]
 
 	// Transaction exists - check if it's confirmed
 	confirmations := currentBlock - existingTx.BlockNumber
@@ -311,9 +320,9 @@ func (iv *ImmutabilityValidator) ValidateBeforeInsert(ctx context.Context, tx *m
 		if len(violations) > 0 {
 			return &types.ServiceError{
 				Code:    "IMMUTABLE_TRANSACTION_CONFLICT",
-				Message: fmt.Sprintf("cannot insert transaction %s: conflicts with confirmed transaction", tx.Hash),
+				Message: fmt.Sprintf("cannot insert transaction %s: conflicts with confirmed transaction", tx.TxHash),
 				Details: map[string]interface{}{
-					"hash":          tx.Hash,
+					"hash":          tx.TxHash,
 					"confirmations": confirmations,
 					"violations":    violations,
 				},

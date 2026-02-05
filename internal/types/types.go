@@ -43,6 +43,20 @@ const (
 	DirectionOut TransactionDirection = "out"
 )
 
+// TransferType represents the type of transfer
+type TransferType string
+
+const (
+	// TransferTypeNative represents native token transfer (ETH, BNB, etc.)
+	TransferTypeNative TransferType = "native"
+	// TransferTypeERC20 represents ERC20 token transfer
+	TransferTypeERC20 TransferType = "erc20"
+	// TransferTypeERC721 represents ERC721 NFT transfer
+	TransferTypeERC721 TransferType = "erc721"
+	// TransferTypeERC1155 represents ERC1155 multi-token transfer
+	TransferTypeERC1155 TransferType = "erc1155"
+)
+
 // ChainID represents supported blockchain networks
 type ChainID string
 
@@ -60,6 +74,29 @@ const (
 	// ChainBNB represents the BNB Chain (BSC)
 	ChainBNB ChainID = "bnb"
 )
+
+// NormalizeChainID converts chain IDs (numeric or string) to canonical string format
+func NormalizeChainID(chain string) ChainID {
+	switch chain {
+	case "1", "ethereum":
+		return ChainEthereum
+	case "137", "polygon":
+		return ChainPolygon
+	case "42161", "arbitrum":
+		return ChainArbitrum
+	case "10", "optimism":
+		return ChainOptimism
+	case "8453", "base":
+		return ChainBase
+	case "56", "bnb":
+		return ChainBNB
+	default:
+		if chain == "" {
+			return ChainEthereum
+		}
+		return ChainID(chain)
+	}
+}
 
 // BackfillStatus represents the status of a backfill job
 type BackfillStatus string
@@ -94,6 +131,7 @@ type TokenTransfer struct {
 	Value    string  `json:"value"`              // Transfer amount (as string for big numbers)
 	Symbol   *string `json:"symbol,omitempty"`   // Token symbol (e.g., "USDC")
 	Decimals *int    `json:"decimals,omitempty"` // Token decimals
+	TokenID  *string `json:"tokenId,omitempty"`  // Token ID for NFTs (ERC721/ERC1155)
 }
 
 // TokenBalance represents balance for a specific token
@@ -155,6 +193,8 @@ type NormalizedTransaction struct {
 	MethodID       *string              `json:"methodId,omitempty"`
 	FuncName       *string              `json:"funcName,omitempty"` // Function name (e.g., "approve", "transfer", "withdraw")
 	Input          *string              `json:"input,omitempty"`
+	IsInternal     bool                 `json:"isInternal,omitempty"` // True for internal transactions (from txlistinternal API)
+	TraceIndex     uint32               `json:"traceIndex,omitempty"` // Index within internal transactions for same tx hash
 }
 
 // SyncStatus represents sync status for an address on a chain

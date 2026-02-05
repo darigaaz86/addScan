@@ -58,6 +58,15 @@ func main() {
 	backfillRepo := storage.NewBackfillJobRepository(postgres)
 	txRepo := storage.NewTransactionRepository(clickhouse)
 
+	// Initialize token whitelist for spam detection
+	whitelistRepo := storage.NewTokenWhitelistRepository(postgres)
+	if err := whitelistRepo.LoadCache(context.Background()); err != nil {
+		log.Printf("Warning: failed to load token whitelist: %v", err)
+	} else {
+		txRepo.SetTokenWhitelist(whitelistRepo)
+		log.Println("Token whitelist loaded for spam detection")
+	}
+
 	// Initialize rate limiter components (optional - continues without if creation fails)
 	// Requirements: 2.1, 4.1 - Redis-based CU budget tracking for cross-service coordination
 	var rateController *ratelimit.BackfillRateController
@@ -208,11 +217,17 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
+	// Collect enabled chains for per-chain workers
+	var enabledChains []types.ChainID
+	for chainID := range chainAdapters {
+		enabledChains = append(enabledChains, chainID)
+	}
+
 	// Start processing loop in goroutine
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		processLoop(ctx, backfillService)
+		processLoop(ctx, backfillService, enabledChains)
 	}()
 
 	// Wait for shutdown signal
@@ -235,33 +250,37 @@ func main() {
 	log.Println("Goodbye!")
 }
 
-// processLoop continuously processes backfill jobs
-// Processes up to 3 jobs concurrently (one per chain) since each chain has separate rate limits
-func processLoop(ctx context.Context, backfillService *service.BackfillService) {
-	ticker := time.NewTicker(2 * time.Second) // Check more frequently
+// processLoop starts per-chain workers that process jobs independently
+// Each chain has its own worker so a slow/failing chain doesn't block others
+// All workers share the same Etherscan client which has a global rate limiter (3 req/sec)
+func processLoop(ctx context.Context, backfillService *service.BackfillService, chains []types.ChainID) {
+	log.Printf("Starting %d per-chain backfill workers", len(chains))
+
+	// Start a worker for each chain
+	for _, chain := range chains {
+		go chainWorker(ctx, backfillService, chain)
+	}
+
+	// Wait for context cancellation
+	<-ctx.Done()
+	log.Println("Processing loop stopped")
+}
+
+// chainWorker processes jobs for a specific chain
+func chainWorker(ctx context.Context, backfillService *service.BackfillService, chain types.ChainID) {
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	// Semaphore to limit concurrent jobs (one per chain max)
-	const maxConcurrent = 3
-	sem := make(chan struct{}, maxConcurrent)
+	log.Printf("[Worker-%s] Started", chain)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Processing loop stopped")
+			log.Printf("[Worker-%s] Stopped", chain)
 			return
 		case <-ticker.C:
-			// Try to start a new job if we have capacity
-			select {
-			case sem <- struct{}{}:
-				go func() {
-					defer func() { <-sem }()
-					if err := backfillService.ProcessNextJob(ctx); err != nil {
-						log.Printf("Error processing job: %v", err)
-					}
-				}()
-			default:
-				// All workers busy, skip this tick
+			if err := backfillService.ProcessNextJobForChain(ctx, chain); err != nil {
+				log.Printf("[Worker-%s] Error: %v", chain, err)
 			}
 		}
 	}

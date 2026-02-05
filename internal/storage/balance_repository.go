@@ -252,6 +252,7 @@ func (r *BalanceRepository) getTokenBalancesFromTransactions(ctx context.Context
 		  AND chain = ?
 		  AND status = 'success'
 		  AND token_transfers != '[]'
+		  AND is_spam = 0
 	`
 
 	rows, err := r.db.Conn().Query(ctx, query, address, string(chain))
@@ -443,63 +444,65 @@ type tokenBalanceTracker struct {
 }
 
 // GetAddressBalance gets complete balance info for an address on a chain
-// Includes both regular transactions and Goldsky internal transactions
+// Uses pre-aggregated materialized views for fast queries
 func (r *BalanceRepository) GetAddressBalance(ctx context.Context, address string, chain types.ChainID) (*AddressBalance, error) {
 	address = strings.ToLower(address)
 
-	// Get native balance (includes Goldsky traces)
-	nativeBalance, err := r.GetNativeBalance(ctx, address, chain)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get native balance: %w", err)
-	}
-
-	// Get token balances (includes Goldsky logs)
-	tokenBalances, err := r.GetTokenBalances(ctx, address, chain)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get token balances: %w", err)
-	}
-
-	// Get transaction summary from regular transactions
-	summaryQuery := `
+	// Query native balance from aggregation table (single query)
+	nativeQuery := `
 		SELECT 
-			countIf(direction = 'in') as tx_count_in,
-			countIf(direction = 'out') as tx_count_out,
-			min(timestamp) as first_tx_time,
-			max(timestamp) as last_tx_time,
-			max(block_number) as last_block
-		FROM transactions
-		WHERE address = ? AND chain = ? AND status = 'success'
+			toString(sum(balance_in) - sum(balance_out) - sum(gas_spent)) as balance,
+			sum(tx_count_in) as tx_count_in,
+			sum(tx_count_out) as tx_count_out,
+			min(first_seen) as first_seen,
+			max(last_seen) as last_seen
+		FROM native_balances_agg
+		WHERE address = ? AND chain = ?
 	`
 
+	var nativeBalance string
 	var txCountIn, txCountOut uint64
-	var firstTxTime, lastTxTime int64
-	var lastBlock uint64
+	var firstSeen, lastSeen int64
 
-	row := r.db.Conn().QueryRow(ctx, summaryQuery, address, string(chain))
-	if err := row.Scan(&txCountIn, &txCountOut, &firstTxTime, &lastTxTime, &lastBlock); err != nil {
-		// Initialize with zeros if no regular transactions
+	row := r.db.Conn().QueryRow(ctx, nativeQuery, address, string(chain))
+	if err := row.Scan(&nativeBalance, &txCountIn, &txCountOut, &firstSeen, &lastSeen); err != nil {
+		nativeBalance = "0"
 		txCountIn, txCountOut = 0, 0
-		firstTxTime, lastTxTime = 0, 0
-		lastBlock = 0
 	}
 
-	// Also count Goldsky internal transactions
-	goldskyInQuery := `SELECT count() FROM goldsky_traces WHERE lower(to_address) = ? AND chain = ? AND status = 1`
-	goldskyOutQuery := `SELECT count() FROM goldsky_traces WHERE lower(from_address) = ? AND chain = ? AND status = 1`
+	// Query token balances from aggregation table (single query)
+	tokenQuery := `
+		SELECT 
+			token_address,
+			any(token_symbol) as symbol,
+			any(token_decimals) as decimals,
+			toString(sum(balance_in) - sum(balance_out)) as balance
+		FROM token_balances_agg
+		WHERE address = ? AND chain = ?
+		GROUP BY token_address
+		HAVING sum(balance_in) - sum(balance_out) > 0
+	`
 
-	var goldskyIn, goldskyOut uint64
-	row = r.db.Conn().QueryRow(ctx, goldskyInQuery, address, string(chain))
-	row.Scan(&goldskyIn) // Ignore error, default to 0
+	rows, err := r.db.Conn().Query(ctx, tokenQuery, address, string(chain))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query token balances: %w", err)
+	}
+	defer rows.Close()
 
-	row = r.db.Conn().QueryRow(ctx, goldskyOutQuery, address, string(chain))
-	row.Scan(&goldskyOut) // Ignore error, default to 0
+	tokenBalances := make([]TokenBalanceResult, 0)
+	for rows.Next() {
+		var tb TokenBalanceResult
+		if err := rows.Scan(&tb.TokenAddress, &tb.Symbol, &tb.Decimals, &tb.Balance); err != nil {
+			continue
+		}
+		if tb.Symbol == "" {
+			tb.Symbol = "UNKNOWN"
+		}
+		tokenBalances = append(tokenBalances, tb)
+	}
 
-	// Combine counts
-	txCountIn += goldskyIn
-	txCountOut += goldskyOut
-
-	// If no transactions at all, return zero balance
-	if txCountIn == 0 && txCountOut == 0 {
+	// If no data at all, return zero balance
+	if txCountIn == 0 && txCountOut == 0 && len(tokenBalances) == 0 {
 		return &AddressBalance{
 			Address:       address,
 			Chain:         chain,
@@ -511,13 +514,12 @@ func (r *BalanceRepository) GetAddressBalance(ctx context.Context, address strin
 	return &AddressBalance{
 		Address:       address,
 		Chain:         chain,
-		NativeBalance: nativeBalance.String(),
+		NativeBalance: nativeBalance,
 		TokenBalances: tokenBalances,
 		TxCountIn:     int64(txCountIn),
 		TxCountOut:    int64(txCountOut),
-		FirstTxTime:   firstTxTime,
-		LastTxTime:    lastTxTime,
-		LastBlock:     lastBlock,
+		FirstTxTime:   firstSeen,
+		LastTxTime:    lastSeen,
 	}, nil
 }
 
@@ -539,7 +541,7 @@ func (r *BalanceRepository) GetMultiChainBalance(ctx context.Context, address st
 }
 
 // GetBalanceSummary gets a quick summary of balances for multiple addresses
-// This is optimized for portfolio views
+// This is optimized for portfolio views - uses batch queries
 func (r *BalanceRepository) GetBalanceSummary(ctx context.Context, addresses []string) (map[string]map[types.ChainID]*AddressBalance, error) {
 	if len(addresses) == 0 {
 		return make(map[string]map[types.ChainID]*AddressBalance), nil
@@ -551,19 +553,22 @@ func (r *BalanceRepository) GetBalanceSummary(ctx context.Context, addresses []s
 		normalizedAddrs[i] = strings.ToLower(addr)
 	}
 
-	// Query aggregated data for all addresses
-	query := `
+	// Build result map
+	result := make(map[string]map[types.ChainID]*AddressBalance)
+
+	// Batch query native balances from aggregation table
+	placeholders := strings.Repeat("?,", len(normalizedAddrs)-1) + "?"
+	nativeQuery := `
 		SELECT 
 			address,
 			chain,
-			countIf(direction = 'in') as tx_count_in,
-			countIf(direction = 'out') as tx_count_out,
-			min(timestamp) as first_tx_time,
-			max(timestamp) as last_tx_time,
-			max(block_number) as last_block
-		FROM transactions
-		WHERE address IN (` + strings.Repeat("?,", len(normalizedAddrs)-1) + `?)
-		  AND status = 'success'
+			toString(sum(balance_in) - sum(balance_out) - sum(gas_spent)) as balance,
+			sum(tx_count_in) as tx_count_in,
+			sum(tx_count_out) as tx_count_out,
+			min(first_seen) as first_seen,
+			max(last_seen) as last_seen
+		FROM native_balances_agg
+		WHERE address IN (` + placeholders + `)
 		GROUP BY address, chain
 	`
 
@@ -572,57 +577,85 @@ func (r *BalanceRepository) GetBalanceSummary(ctx context.Context, addresses []s
 		args[i] = addr
 	}
 
-	rows, err := r.db.Conn().Query(ctx, query, args...)
+	rows, err := r.db.Conn().Query(ctx, nativeQuery, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query balance summary: %w", err)
+		return nil, fmt.Errorf("failed to query native balances: %w", err)
 	}
 	defer rows.Close()
 
-	// Build result map
-	result := make(map[string]map[types.ChainID]*AddressBalance)
-
 	for rows.Next() {
-		var address, chainStr string
+		var address, chainStr, balance string
 		var txCountIn, txCountOut uint64
-		var firstTxTime, lastTxTime int64
-		var lastBlock uint64
+		var firstSeen, lastSeen int64
 
-		if err := rows.Scan(&address, &chainStr, &txCountIn, &txCountOut, &firstTxTime, &lastTxTime, &lastBlock); err != nil {
-			return nil, fmt.Errorf("failed to scan balance summary: %w", err)
+		if err := rows.Scan(&address, &chainStr, &balance, &txCountIn, &txCountOut, &firstSeen, &lastSeen); err != nil {
+			continue
 		}
 
 		chain := types.ChainID(chainStr)
-
 		if result[address] == nil {
 			result[address] = make(map[types.ChainID]*AddressBalance)
 		}
 
 		result[address][chain] = &AddressBalance{
-			Address:     address,
-			Chain:       chain,
-			TxCountIn:   int64(txCountIn),
-			TxCountOut:  int64(txCountOut),
-			FirstTxTime: firstTxTime,
-			LastTxTime:  lastTxTime,
-			LastBlock:   lastBlock,
+			Address:       address,
+			Chain:         chain,
+			NativeBalance: balance,
+			TokenBalances: []TokenBalanceResult{},
+			TxCountIn:     int64(txCountIn),
+			TxCountOut:    int64(txCountOut),
+			FirstTxTime:   firstSeen,
+			LastTxTime:    lastSeen,
 		}
 	}
 
-	// Now calculate actual balances for each address/chain combination
-	for addr, chainBalances := range result {
-		for chain, balance := range chainBalances {
-			// Get native balance
-			nativeBalance, err := r.GetNativeBalance(ctx, addr, chain)
-			if err == nil {
-				balance.NativeBalance = nativeBalance.String()
-			}
+	// Batch query token balances
+	tokenQuery := `
+		SELECT 
+			address,
+			chain,
+			token_address,
+			any(token_symbol) as symbol,
+			any(token_decimals) as decimals,
+			toString(sum(balance_in) - sum(balance_out)) as balance
+		FROM token_balances_agg
+		WHERE address IN (` + placeholders + `)
+		GROUP BY address, chain, token_address
+		HAVING sum(balance_in) - sum(balance_out) > 0
+	`
 
-			// Get token balances
-			tokenBalances, err := r.GetTokenBalances(ctx, addr, chain)
-			if err == nil {
-				balance.TokenBalances = tokenBalances
+	rows2, err := r.db.Conn().Query(ctx, tokenQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query token balances: %w", err)
+	}
+	defer rows2.Close()
+
+	for rows2.Next() {
+		var address, chainStr string
+		var tb TokenBalanceResult
+		if err := rows2.Scan(&address, &chainStr, &tb.TokenAddress, &tb.Symbol, &tb.Decimals, &tb.Balance); err != nil {
+			continue
+		}
+
+		chain := types.ChainID(chainStr)
+		if tb.Symbol == "" {
+			tb.Symbol = "UNKNOWN"
+		}
+
+		// Ensure address/chain entry exists
+		if result[address] == nil {
+			result[address] = make(map[types.ChainID]*AddressBalance)
+		}
+		if result[address][chain] == nil {
+			result[address][chain] = &AddressBalance{
+				Address:       address,
+				Chain:         chain,
+				NativeBalance: "0",
+				TokenBalances: []TokenBalanceResult{},
 			}
 		}
+
+		result[address][chain].TokenBalances = append(result[address][chain].TokenBalances, tb)
 	}
 
 	return result, nil

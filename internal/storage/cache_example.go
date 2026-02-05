@@ -14,20 +14,20 @@ import (
 // This demonstrates how to wire together all the caching layers
 type CacheManager struct {
 	// Core components
-	redis              *RedisCache
-	cacheService       *CacheService
-	
+	redis        *RedisCache
+	cacheService *CacheService
+
 	// Transaction caching
-	transactionCache   *TransactionCache
-	concurrentTxCache  *ConcurrentTransactionCache
-	
+	transactionCache  *TransactionCache
+	concurrentTxCache *ConcurrentTransactionCache
+
 	// Query caching
 	queryCache         *QueryCache
 	concurrentQryCache *ConcurrentQueryCache
-	
+
 	// Configuration
-	ttl                time.Duration
-	windowSize         int
+	ttl        time.Duration
+	windowSize int
 }
 
 // NewCacheManager creates a new cache manager with all components initialized
@@ -42,21 +42,21 @@ func NewCacheManager(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Redis cache: %w", err)
 	}
-	
+
 	// Create cache service
 	cacheService := NewCacheService(redis, ttl)
-	
+
 	// Create transaction repository
 	txRepo := NewTransactionRepository(clickhouseDB)
-	
+
 	// Create transaction cache
 	txCache := NewTransactionCache(cacheService, txRepo, windowSize)
 	concurrentTxCache := NewConcurrentTransactionCache(txCache)
-	
+
 	// Create query cache
 	qryCache := NewQueryCache(cacheService, txRepo)
 	concurrentQryCache := NewConcurrentQueryCache(qryCache)
-	
+
 	return &CacheManager{
 		redis:              redis,
 		cacheService:       cacheService,
@@ -98,7 +98,7 @@ func (cm *CacheManager) InvalidatePortfolio(ctx context.Context, portfolioID str
 func (cm *CacheManager) GetStats() *CacheManagerStats {
 	txStats := cm.concurrentTxCache.GetStats()
 	qryStats := cm.concurrentQryCache.GetStats()
-	
+
 	return &CacheManagerStats{
 		TransactionCache: txStats,
 		QueryCache:       qryStats,
@@ -124,9 +124,9 @@ type CacheManagerStats struct {
 func ExampleUsage() {
 	// This is a demonstration of how to use the caching layer
 	// In production, this would be called from your service layer
-	
+
 	ctx := context.Background()
-	
+
 	// Configuration
 	redisConfig := &config.RedisConfig{
 		Host:           "localhost",
@@ -135,7 +135,7 @@ func ExampleUsage() {
 		DB:             0,
 		MaxConnections: 50,
 	}
-	
+
 	clickhouseConfig := &config.ClickHouseConfig{
 		Host:     "localhost",
 		Port:     "9000",
@@ -143,7 +143,7 @@ func ExampleUsage() {
 		User:     "default",
 		Password: "",
 	}
-	
+
 	// Initialize ClickHouse
 	clickhouseDB, err := NewClickHouseDB(clickhouseConfig)
 	if err != nil {
@@ -151,7 +151,7 @@ func ExampleUsage() {
 		return
 	}
 	defer clickhouseDB.Close()
-	
+
 	// Create cache manager
 	cacheManager, err := NewCacheManager(
 		redisConfig,
@@ -164,61 +164,59 @@ func ExampleUsage() {
 		return
 	}
 	defer cacheManager.Close()
-	
+
 	// Example 1: Get transaction window for a single chain
 	address := "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
 	chain := types.ChainEthereum
-	
+
 	window, err := cacheManager.GetTransactionWindow(ctx, address, chain)
 	if err != nil {
 		fmt.Printf("Failed to get transaction window: %v\n", err)
 		return
 	}
-	
-	fmt.Printf("Retrieved %d transactions for %s on %s\n", 
+
+	fmt.Printf("Retrieved %d transactions for %s on %s\n",
 		len(window.Transactions), address, chain)
 	fmt.Printf("Total transactions in DB: %d\n", window.TotalCount)
-	
+
 	// Example 2: Get merged window across multiple chains
 	chains := []types.ChainID{
 		types.ChainEthereum,
 		types.ChainPolygon,
 		types.ChainArbitrum,
 	}
-	
+
 	mergedTxs, err := cacheManager.GetMergedWindow(ctx, address, chains, 100)
 	if err != nil {
 		fmt.Printf("Failed to get merged window: %v\n", err)
 		return
 	}
-	
-	fmt.Printf("Retrieved %d merged transactions across %d chains\n", 
+
+	fmt.Printf("Retrieved %d merged transactions across %d chains\n",
 		len(mergedTxs), len(chains))
-	
+
 	// Example 3: Execute a filtered query
 	dateFrom := time.Now().AddDate(0, -1, 0) // Last month
-	minValue := 1000.0
-	
+
 	queryParams := &QueryParams{
 		Address:   address,
 		Chains:    chains,
 		DateFrom:  &dateFrom,
-		MinValue:  &minValue,
-		SortBy:    "value",
+		SortBy:    "timestamp",
 		SortOrder: "desc",
 		Limit:     50,
 		Offset:    0,
 	}
-	
+
 	result, err := cacheManager.ExecuteQuery(ctx, queryParams)
 	if err != nil {
 		fmt.Printf("Failed to execute query: %v\n", err)
 		return
 	}
-	
+
 	fmt.Printf("Query returned %d transactions (cached: %v, query time: %dms)\n",
 		len(result.Transactions), result.Cached, result.QueryTimeMs)
-	
+
 	// Example 4: Get cache statistics
 	stats := cacheManager.GetStats()
 	fmt.Printf("\nCache Statistics:\n")
@@ -230,13 +228,13 @@ func ExampleUsage() {
 		stats.QueryCache.CacheHits,
 		stats.QueryCache.CacheMisses,
 		stats.QueryCache.HitRate)
-	
+
 	// Example 5: Invalidate cache when new transactions arrive
 	// This would typically be called by sync workers
 	if err := cacheManager.InvalidateAddress(ctx, address); err != nil {
 		fmt.Printf("Failed to invalidate cache: %v\n", err)
 		return
 	}
-	
+
 	fmt.Println("\nCache invalidated successfully")
 }

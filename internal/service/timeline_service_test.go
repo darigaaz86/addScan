@@ -84,11 +84,11 @@ func TestMergeAndSortTransactions_TimestampOrdering(t *testing.T) {
 	// Create transactions with various timestamps
 	now := time.Now().Unix()
 	transactions := []*types.NormalizedTransaction{
-		{Hash: "0x1", Chain: types.ChainEthereum, Timestamp: now - 3600},     // 1 hour ago
-		{Hash: "0x2", Chain: types.ChainPolygon, Timestamp: now},             // now
-		{Hash: "0x3", Chain: types.ChainArbitrum, Timestamp: now - 7200},     // 2 hours ago
-		{Hash: "0x4", Chain: types.ChainOptimism, Timestamp: now - 1800},     // 30 minutes ago
-		{Hash: "0x5", Chain: types.ChainBase, Timestamp: now - 86400},        // 1 day ago
+		{Hash: "0x1", Chain: types.ChainEthereum, Timestamp: now - 3600}, // 1 hour ago
+		{Hash: "0x2", Chain: types.ChainPolygon, Timestamp: now},         // now
+		{Hash: "0x3", Chain: types.ChainArbitrum, Timestamp: now - 7200}, // 2 hours ago
+		{Hash: "0x4", Chain: types.ChainOptimism, Timestamp: now - 1800}, // 30 minutes ago
+		{Hash: "0x5", Chain: types.ChainBase, Timestamp: now - 86400},    // 1 day ago
 	}
 
 	result := service.mergeAndSortTransactions(transactions)
@@ -167,16 +167,12 @@ func TestConvertToStorageFilters(t *testing.T) {
 	t.Run("with filters", func(t *testing.T) {
 		dateFrom := time.Now().Add(-24 * time.Hour)
 		dateTo := time.Now()
-		minValue := 1.0
-		maxValue := 100.0
 		status := types.StatusSuccess
 
 		filters := &TimelineFilters{
 			Chains:   []types.ChainID{types.ChainEthereum, types.ChainPolygon},
 			DateFrom: &dateFrom,
 			DateTo:   &dateTo,
-			MinValue: &minValue,
-			MaxValue: &maxValue,
 			Status:   &status,
 			Limit:    50,
 			Offset:   10,
@@ -192,12 +188,6 @@ func TestConvertToStorageFilters(t *testing.T) {
 		}
 		if result.DateTo == nil || !result.DateTo.Equal(dateTo) {
 			t.Errorf("DateTo not set correctly")
-		}
-		if result.MinValue == nil || *result.MinValue != minValue {
-			t.Errorf("MinValue not set correctly")
-		}
-		if result.MaxValue == nil || *result.MaxValue != maxValue {
-			t.Errorf("MaxValue not set correctly")
 		}
 		if result.Status == nil || *result.Status != status {
 			t.Errorf("Status not set correctly")
@@ -228,9 +218,9 @@ func TestBuildCacheKey(t *testing.T) {
 			expected: "timeline:0x1234",
 		},
 		{
-			name:    "empty filters",
-			address: "0x1234",
-			filters: &TimelineFilters{},
+			name:     "empty filters",
+			address:  "0x1234",
+			filters:  &TimelineFilters{},
 			expected: "timeline:0x1234",
 		},
 		{

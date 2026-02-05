@@ -412,6 +412,11 @@ func (r *AddressRepository) List(ctx context.Context, filters *AddressFilters) (
 	return addresses, rows.Err()
 }
 
+// ListAll retrieves all tracked addresses (for snapshot worker)
+func (r *AddressRepository) ListAll(ctx context.Context) ([]*models.Address, error) {
+	return r.List(ctx, nil)
+}
+
 // MarkBackfillComplete marks backfill as complete for an address on a chain
 func (r *AddressRepository) MarkBackfillComplete(ctx context.Context, address string, chain types.ChainID, tier types.UserTier, txCount int) error {
 	if err := ValidateAddress(address); err != nil {
