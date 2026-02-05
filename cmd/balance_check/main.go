@@ -288,7 +288,7 @@ func getSnapshots(ctx context.Context, address string) ([]NativeSnapshot, error)
 func getDBBalance(ctx context.Context, address string) (*big.Int, int64, error) {
 	address = strings.ToLower(address)
 
-	// Query directly from transactions table to avoid double-counting in materialized views
+	// Query directly from transactions table
 	query := `
 		SELECT 
 			toString(sum(CASE WHEN direction = 'in' THEN toDecimal256(value, 0) ELSE toDecimal256(0, 0) END)) as total_in,

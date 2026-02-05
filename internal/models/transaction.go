@@ -57,6 +57,11 @@ func FromNormalizedTransaction(nt *types.NormalizedTransaction, address string) 
 	address = strings.ToLower(address)
 	var records []*Transaction
 
+	// Check if this is a token transfer (from tokentx/tokennfttx/token1155tx API)
+	// Token transfers should NOT create native records - they only create token records
+	// The native OUT (for gas) comes from the txlist API separately
+	isTokenTransfer := nt.Category != nil && (*nt.Category == "erc20" || *nt.Category == "erc721" || *nt.Category == "erc1155")
+
 	// Check if this is a normal transaction (has gas) or internal transaction (no gas)
 	// Internal transactions from Etherscan don't have gas - gas is paid by the outer transaction
 	hasGas := nt.GasUsed != nil && *nt.GasUsed != "" && nt.GasPrice != nil && *nt.GasPrice != ""
@@ -79,50 +84,55 @@ func FromNormalizedTransaction(nt *types.NormalizedTransaction, address string) 
 	hasNativeValue := nt.Value != "" && nt.Value != "0"
 	hasTokenTransfers := len(nt.TokenTransfers) > 0
 
-	// For normal transactions where user is the initiator and has gas:
-	// Always create a native OUT record to capture gas payment (even if value=0)
-	// This handles swap transactions where user pays gas but sends 0 ETH
-	if hasGas && isUserInitiated {
-		nativeTx := baseTx
-		nativeTx.LogIndex = 0
-		nativeTx.TransferType = types.TransferTypeNative
-		nativeTx.TransferFrom = strings.ToLower(nt.From)
-		nativeTx.TransferTo = strings.ToLower(nt.To)
-		nativeTx.Value = nt.Value // Could be 0 for swap transactions
-		nativeTx.TokenDecimals = 18
-		nativeTx.Direction = types.DirectionOut
-		// Gas only on native OUT record where user initiated
-		nativeTx.GasUsed = *nt.GasUsed
-		nativeTx.GasPrice = *nt.GasPrice
-		records = append(records, &nativeTx)
-	} else if hasNativeValue || !hasTokenTransfers {
-		// For internal transactions (no gas) or receiving transactions:
-		// Create native record only if there's value or no token transfers
-		nativeTx := baseTx
-		// Use high log_index for internal transactions to avoid collision with normal tx
-		// Internal transactions use 1000000 + traceIndex to differentiate from normal tx (log_index=0)
-		if nt.IsInternal {
-			nativeTx.LogIndex = 1000000 + nt.TraceIndex
-		} else {
+	// Only create native records for non-token-transfer transactions
+	// Token transfers (from tokentx API) should NOT create native OUT records
+	// because the "from" in token transfers is the token sender, not the tx initiator
+	if !isTokenTransfer {
+		// For normal transactions where user is the initiator and has gas:
+		// Always create a native OUT record to capture gas payment (even if value=0)
+		// This handles swap transactions where user pays gas but sends 0 ETH
+		if hasGas && isUserInitiated {
+			nativeTx := baseTx
 			nativeTx.LogIndex = 0
-		}
-		nativeTx.TransferType = types.TransferTypeNative
-		nativeTx.TransferFrom = strings.ToLower(nt.From)
-		nativeTx.TransferTo = strings.ToLower(nt.To)
-		nativeTx.Value = nt.Value
-		nativeTx.TokenDecimals = 18
-		// No gas for internal transactions or receiving transactions
-		nativeTx.GasUsed = ""
-		nativeTx.GasPrice = ""
-
-		// Direction based on tracked address
-		if strings.EqualFold(nt.From, address) {
+			nativeTx.TransferType = types.TransferTypeNative
+			nativeTx.TransferFrom = strings.ToLower(nt.From)
+			nativeTx.TransferTo = strings.ToLower(nt.To)
+			nativeTx.Value = nt.Value // Could be 0 for swap transactions
+			nativeTx.TokenDecimals = 18
 			nativeTx.Direction = types.DirectionOut
-		} else {
-			nativeTx.Direction = types.DirectionIn
-		}
+			// Gas only on native OUT record where user initiated
+			nativeTx.GasUsed = *nt.GasUsed
+			nativeTx.GasPrice = *nt.GasPrice
+			records = append(records, &nativeTx)
+		} else if hasNativeValue || !hasTokenTransfers {
+			// For internal transactions (no gas) or receiving transactions:
+			// Create native record only if there's value or no token transfers
+			nativeTx := baseTx
+			// Use high log_index for internal transactions to avoid collision with normal tx
+			// Internal transactions use 1000000 + traceIndex to differentiate from normal tx (log_index=0)
+			if nt.IsInternal {
+				nativeTx.LogIndex = 1000000 + nt.TraceIndex
+			} else {
+				nativeTx.LogIndex = 0
+			}
+			nativeTx.TransferType = types.TransferTypeNative
+			nativeTx.TransferFrom = strings.ToLower(nt.From)
+			nativeTx.TransferTo = strings.ToLower(nt.To)
+			nativeTx.Value = nt.Value
+			nativeTx.TokenDecimals = 18
+			// No gas for internal transactions or receiving transactions
+			nativeTx.GasUsed = ""
+			nativeTx.GasPrice = ""
 
-		records = append(records, &nativeTx)
+			// Direction based on tracked address
+			if strings.EqualFold(nt.From, address) {
+				nativeTx.Direction = types.DirectionOut
+			} else {
+				nativeTx.Direction = types.DirectionIn
+			}
+
+			records = append(records, &nativeTx)
+		}
 	}
 
 	// Create token transfer records (never have gas - gas is on native OUT only)
