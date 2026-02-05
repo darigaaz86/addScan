@@ -25,10 +25,30 @@ type NativeSnapshot struct {
 	TxCountOut uint64
 }
 
+var chainConfig = map[string]struct {
+	rpcEnvVar    string
+	nativeSymbol string
+	explorerURL  string
+}{
+	"ethereum": {"ETHEREUM_RPC_URLS", "ETH", "https://etherscan.io/address/"},
+	"base":     {"BASE_RPC_URLS", "ETH", "https://basescan.org/address/"},
+	"bnb":      {"BNB_RPC_URLS", "BNB", "https://bscscan.com/address/"},
+}
+
+var selectedChain string
+
 func main() {
 	addrFlag := flag.String("address", "", "Specific address to check (optional)")
 	allFlag := flag.Bool("all", false, "Check all addresses")
+	chainFlag := flag.String("chain", "ethereum", "Chain to check (ethereum, base, bnb)")
 	flag.Parse()
+
+	selectedChain = strings.ToLower(*chainFlag)
+	if _, ok := chainConfig[selectedChain]; !ok {
+		fmt.Printf("Unsupported chain: %s (supported: ethereum, base, bnb)\n", selectedChain)
+		os.Exit(1)
+	}
+	fmt.Printf("Chain: %s\n", selectedChain)
 
 	if err := godotenv.Load(); err != nil {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
@@ -161,24 +181,25 @@ func checkSingleAddress(selectedAddr string) {
 	}
 
 	// === Print Results ===
+	cfg := chainConfig[selectedChain]
 	fmt.Printf("=== Balance Comparison for %s ===\n\n", selectedAddr)
 	fmt.Printf("Current block: %d\n\n", blockNum)
 
 	fmt.Printf("DB Balance (calculated from transactions):\n")
 	fmt.Printf("  Wei:  %s\n", dbBalance.String())
-	fmt.Printf("  ETH:  %.18f\n", weiToEth(dbBalance))
+	fmt.Printf("  %s:  %.18f\n", cfg.nativeSymbol, weiToEth(dbBalance))
 	fmt.Printf("  Tx count: %d\n\n", txCount)
 
 	fmt.Printf("On-Chain Balance:\n")
 	fmt.Printf("  Wei:  %s\n", onChainBalance.String())
-	fmt.Printf("  ETH:  %.18f\n\n", weiToEth(onChainBalance))
+	fmt.Printf("  %s:  %.18f\n\n", cfg.nativeSymbol, weiToEth(onChainBalance))
 
 	diff := new(big.Int).Sub(onChainBalance, dbBalance)
 	diffAbs := new(big.Int).Abs(diff)
 
 	fmt.Printf("Difference (On-Chain vs DB):\n")
 	fmt.Printf("  Wei:  %s\n", diff.String())
-	fmt.Printf("  ETH:  %.18f\n\n", weiToEth(diff))
+	fmt.Printf("  %s:  %.18f\n\n", cfg.nativeSymbol, weiToEth(diff))
 
 	tolerance := big.NewInt(1000)
 	if diffAbs.Cmp(tolerance) <= 0 {
@@ -202,7 +223,7 @@ func checkSingleAddress(selectedAddr string) {
 			snapshotBal := new(big.Int)
 			snapshotBal.SetString(s.BalanceRaw, 10)
 			fmt.Printf("  Date: %s\n", s.Date.Format("2006-01-02"))
-			fmt.Printf("    Balance: %s wei (%.6f ETH)\n", s.BalanceRaw, weiToEth(snapshotBal))
+			fmt.Printf("    Balance: %s wei (%.6f %s)\n", s.BalanceRaw, weiToEth(snapshotBal), cfg.nativeSymbol)
 			fmt.Printf("    Tx In: %d, Tx Out: %d\n\n", s.TxCountIn, s.TxCountOut)
 		}
 
@@ -215,7 +236,7 @@ func checkSingleAddress(selectedAddr string) {
 
 		fmt.Printf("Latest Snapshot vs On-Chain:\n")
 		fmt.Printf("  Snapshot date: %s\n", latest.Date.Format("2006-01-02"))
-		fmt.Printf("  Difference: %s wei (%.18f ETH)\n", snapshotDiff.String(), weiToEth(snapshotDiff))
+		fmt.Printf("  Difference: %s wei (%.18f %s)\n", snapshotDiff.String(), weiToEth(snapshotDiff), cfg.nativeSymbol)
 		if snapshotDiffAbs.Cmp(tolerance) <= 0 {
 			fmt.Printf("  ✅ Snapshot matches current on-chain balance\n")
 		} else if snapshotDiff.Sign() > 0 {
@@ -225,7 +246,7 @@ func checkSingleAddress(selectedAddr string) {
 		}
 	}
 
-	fmt.Printf("\nVerify on Etherscan: https://etherscan.io/address/%s\n", selectedAddr)
+	fmt.Printf("\nVerify on explorer: %s%s\n", cfg.explorerURL, selectedAddr)
 }
 
 func connectClickHouse() (clickhouse.Conn, error) {
@@ -263,11 +284,11 @@ func getSnapshots(ctx context.Context, address string) ([]NativeSnapshot, error)
 	query := `
 		SELECT date, balance_raw, tx_count_in, tx_count_out
 		FROM native_balance_snapshots
-		WHERE address = ? AND chain = 'ethereum'
+		WHERE address = ? AND chain = ?
 		ORDER BY date ASC
 	`
 
-	rows, err := chConn.Query(ctx, query, address)
+	rows, err := chConn.Query(ctx, query, address, selectedChain)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query snapshots: %w", err)
 	}
@@ -296,13 +317,13 @@ func getDBBalance(ctx context.Context, address string) (*big.Int, int64, error) 
 			toString(sum(toUInt256OrZero(gas_used) * toUInt256OrZero(gas_price))) as gas_spent,
 			count(*) as tx_count
 		FROM transactions
-		WHERE address = ? AND chain = 'ethereum' AND transfer_type = 'native'
+		WHERE address = ? AND chain = ? AND transfer_type = 'native'
 	`
 
 	var totalInStr, totalOutStr, gasSpentStr string
 	var txCount uint64
 
-	row := chConn.QueryRow(ctx, query, address)
+	row := chConn.QueryRow(ctx, query, address, selectedChain)
 	if err := row.Scan(&totalInStr, &totalOutStr, &gasSpentStr, &txCount); err != nil {
 		return big.NewInt(0), 0, fmt.Errorf("failed to query balance: %w", err)
 	}
@@ -322,12 +343,14 @@ func getDBBalance(ctx context.Context, address string) (*big.Int, int64, error) 
 }
 
 func getOnChainBalance(ctx context.Context, address string) (*big.Int, uint64, error) {
-	rpcURLs := os.Getenv("ETHEREUM_RPC_URLS")
+	cfg := chainConfig[selectedChain]
+	rpcURLs := os.Getenv(cfg.rpcEnvVar)
 	if rpcURLs == "" {
-		rpcURLs = os.Getenv("ETHEREUM_RPC_PRIMARY")
+		// Fallback to PRIMARY variant
+		rpcURLs = os.Getenv(strings.Replace(cfg.rpcEnvVar, "_URLS", "_PRIMARY", 1))
 	}
 	if rpcURLs == "" {
-		return nil, 0, fmt.Errorf("no Ethereum RPC URL configured")
+		return nil, 0, fmt.Errorf("no RPC URL configured for %s", selectedChain)
 	}
 
 	rpcURL := strings.Split(rpcURLs, ",")[0]
