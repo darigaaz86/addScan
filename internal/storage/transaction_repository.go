@@ -112,7 +112,7 @@ func (r *TransactionRepository) BatchInsert(ctx context.Context, transactions []
 			tx_from, tx_to,
 			transfer_type, transfer_from, transfer_to, value, direction,
 			token_address, token_symbol, token_decimals, token_id,
-			block_number, timestamp, status, gas_used, gas_price, l1_fee, method_id, func_name, is_spam
+			block_number, timestamp, status, gas_used, gas_price, method_id, func_name, is_spam, l1_fee
 		)
 	`)
 	if err != nil {
@@ -147,10 +147,10 @@ func (r *TransactionRepository) BatchInsert(ctx context.Context, transactions []
 			tx.Status,
 			tx.GasUsed,
 			tx.GasPrice,
-			tx.L1Fee,
 			tx.MethodID,
 			tx.FuncName,
 			tx.IsSpam,
+			tx.L1Fee,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append tx %s: %w", tx.TxHash, err)
