@@ -189,12 +189,23 @@ type NormalizedTransaction struct {
 	Status         TransactionStatus    `json:"status"`
 	GasUsed        *string              `json:"gasUsed,omitempty"`
 	GasPrice       *string              `json:"gasPrice,omitempty"`
+	L1Fee          *string              `json:"l1Fee,omitempty"` // L1 data fee for L2 chains (Base, Optimism, Arbitrum)
 	TokenTransfers []TokenTransfer      `json:"tokenTransfers,omitempty"`
 	MethodID       *string              `json:"methodId,omitempty"`
 	FuncName       *string              `json:"funcName,omitempty"` // Function name (e.g., "approve", "transfer", "withdraw")
 	Input          *string              `json:"input,omitempty"`
 	IsInternal     bool                 `json:"isInternal,omitempty"` // True for internal transactions (from txlistinternal API)
 	TraceIndex     uint32               `json:"traceIndex,omitempty"` // Index within internal transactions for same tx hash
+}
+
+// IsL2Chain returns true if the chain is an L2 that has separate L1 fees
+func IsL2Chain(chain ChainID) bool {
+	switch chain {
+	case ChainBase, ChainOptimism, ChainArbitrum:
+		return true
+	default:
+		return false
+	}
 }
 
 // SyncStatus represents sync status for an address on a chain

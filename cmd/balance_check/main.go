@@ -310,34 +310,39 @@ func getDBBalance(ctx context.Context, address string) (*big.Int, int64, error) 
 	address = strings.ToLower(address)
 
 	// Query directly from transactions table
+	// For L2 chains, include l1_fee in gas calculation
 	query := `
 		SELECT 
 			toString(sum(CASE WHEN direction = 'in' THEN toDecimal256(value, 0) ELSE toDecimal256(0, 0) END)) as total_in,
 			toString(sum(CASE WHEN direction = 'out' THEN toDecimal256(value, 0) ELSE toDecimal256(0, 0) END)) as total_out,
 			toString(sum(toUInt256OrZero(gas_used) * toUInt256OrZero(gas_price))) as gas_spent,
+			toString(sum(toUInt256OrZero(l1_fee))) as l1_fee_spent,
 			count(*) as tx_count
 		FROM transactions
 		WHERE address = ? AND chain = ? AND transfer_type = 'native'
 	`
 
-	var totalInStr, totalOutStr, gasSpentStr string
+	var totalInStr, totalOutStr, gasSpentStr, l1FeeSpentStr string
 	var txCount uint64
 
 	row := chConn.QueryRow(ctx, query, address, selectedChain)
-	if err := row.Scan(&totalInStr, &totalOutStr, &gasSpentStr, &txCount); err != nil {
+	if err := row.Scan(&totalInStr, &totalOutStr, &gasSpentStr, &l1FeeSpentStr, &txCount); err != nil {
 		return big.NewInt(0), 0, fmt.Errorf("failed to query balance: %w", err)
 	}
 
 	totalIn := new(big.Int)
 	totalOut := new(big.Int)
 	gasSpent := new(big.Int)
+	l1FeeSpent := new(big.Int)
 	totalIn.SetString(totalInStr, 10)
 	totalOut.SetString(totalOutStr, 10)
 	gasSpent.SetString(gasSpentStr, 10)
+	l1FeeSpent.SetString(l1FeeSpentStr, 10)
 
-	// Balance = totalIn - totalOut - gasSpent
+	// Balance = totalIn - totalOut - gasSpent - l1FeeSpent
 	balance := new(big.Int).Sub(totalIn, totalOut)
 	balance.Sub(balance, gasSpent)
+	balance.Sub(balance, l1FeeSpent)
 
 	return balance, int64(txCount), nil
 }

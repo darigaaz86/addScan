@@ -224,6 +224,14 @@ func (s *BackfillService) processBackfill(ctx context.Context, job *models.Backf
 		return nil
 	}
 
+	// For L2 chains, fetch L1 fees from RPC
+	if types.IsL2Chain(job.Chain) {
+		if err := s.enrichL1Fees(ctx, chainAdapter, transactions); err != nil {
+			log.Printf("[Backfill] Warning: failed to enrich L1 fees: %v", err)
+			// Continue without L1 fees - better to have partial data than none
+		}
+	}
+
 	modelTransactions := make([]*models.Transaction, 0, len(transactions))
 	for _, tx := range transactions {
 		modelTxs := models.FromNormalizedTransaction(tx, job.Address)
@@ -354,6 +362,49 @@ func timePtr(t time.Time) *time.Time {
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// enrichL1Fees fetches L1 fees from RPC for L2 chain transactions
+// Only fetches for transactions where the address is the sender (pays gas)
+func (s *BackfillService) enrichL1Fees(ctx context.Context, chainAdapter adapter.ChainAdapter, transactions []*types.NormalizedTransaction) error {
+	// Get the ethereum adapter to access RPC
+	ethAdapter, ok := chainAdapter.(*adapter.EthereumAdapter)
+	if !ok {
+		return fmt.Errorf("chain adapter is not an EthereumAdapter")
+	}
+
+	// Collect unique tx hashes that need L1 fee lookup
+	// Only for transactions where user is sender (they pay gas)
+	txHashSet := make(map[string]bool)
+	for _, tx := range transactions {
+		if tx.GasUsed != nil && *tx.GasUsed != "" {
+			txHashSet[tx.Hash] = true
+		}
+	}
+
+	if len(txHashSet) == 0 {
+		return nil
+	}
+
+	log.Printf("[Backfill] Fetching L1 fees for %d transactions", len(txHashSet))
+
+	// Fetch L1 fees from RPC
+	l1Fees, err := ethAdapter.FetchL1Fees(ctx, txHashSet)
+	if err != nil {
+		return fmt.Errorf("failed to fetch L1 fees: %w", err)
+	}
+
+	// Enrich transactions with L1 fees
+	enriched := 0
+	for _, tx := range transactions {
+		if l1Fee, ok := l1Fees[tx.Hash]; ok {
+			tx.L1Fee = &l1Fee
+			enriched++
+		}
+	}
+
+	log.Printf("[Backfill] Enriched %d transactions with L1 fees", enriched)
+	return nil
 }
 
 // Auto re-queue configuration

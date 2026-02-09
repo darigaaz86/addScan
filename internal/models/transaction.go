@@ -39,6 +39,7 @@ type Transaction struct {
 	Status      string    `json:"status" ch:"status"`
 	GasUsed     string    `json:"gasUsed" ch:"gas_used"`
 	GasPrice    string    `json:"gasPrice" ch:"gas_price"`
+	L1Fee       string    `json:"l1Fee" ch:"l1_fee"` // L1 data fee for L2 chains
 	MethodID    string    `json:"methodId" ch:"method_id"`
 	FuncName    string    `json:"funcName" ch:"func_name"`
 
@@ -103,6 +104,10 @@ func FromNormalizedTransaction(nt *types.NormalizedTransaction, address string) 
 			// Gas only on native OUT record where user initiated
 			nativeTx.GasUsed = *nt.GasUsed
 			nativeTx.GasPrice = *nt.GasPrice
+			// L1 fee for L2 chains
+			if nt.L1Fee != nil {
+				nativeTx.L1Fee = *nt.L1Fee
+			}
 			records = append(records, &nativeTx)
 		} else if hasNativeValue || !hasTokenTransfers {
 			// For internal transactions (no gas) or receiving transactions:

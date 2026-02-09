@@ -1528,3 +1528,104 @@ func (a *EthereumAdapter) fetchBlockTransactionsRaw(ctx context.Context, rpcURL 
 
 	return rpcResponse.Result.Transactions, nil
 }
+
+// FetchL1Fees fetches L1 fees from transaction receipts for L2 chains
+// Returns a map of tx hash -> L1 fee (as string in wei)
+func (a *EthereumAdapter) FetchL1Fees(ctx context.Context, txHashes map[string]bool) (map[string]string, error) {
+	if len(txHashes) == 0 {
+		return map[string]string{}, nil
+	}
+
+	rpcURL, err := a.provider.GetCurrentURL()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get RPC URL: %w", err)
+	}
+
+	l1Fees := make(map[string]string)
+
+	// Fetch receipts in batches to avoid overwhelming the RPC
+	const batchSize = 10
+	hashes := make([]string, 0, len(txHashes))
+	for hash := range txHashes {
+		hashes = append(hashes, hash)
+	}
+
+	for i := 0; i < len(hashes); i += batchSize {
+		end := i + batchSize
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+
+		// Build batch request
+		requests := make([]map[string]interface{}, len(batch))
+		for j, hash := range batch {
+			requests[j] = map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      j + 1,
+				"method":  "eth_getTransactionReceipt",
+				"params":  []string{hash},
+			}
+		}
+
+		jsonData, err := json.Marshal(requests)
+		if err != nil {
+			log.Printf("[Adapter:%s] Failed to marshal batch request: %v", a.chainID, err)
+			continue
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, bytes.NewBuffer(jsonData))
+		if err != nil {
+			log.Printf("[Adapter:%s] Failed to create request: %v", a.chainID, err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("[Adapter:%s] Failed to make request: %v", a.chainID, err)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			log.Printf("[Adapter:%s] Failed to read response: %v", a.chainID, err)
+			continue
+		}
+
+		// Parse batch response
+		var responses []struct {
+			ID     int `json:"id"`
+			Result *struct {
+				TransactionHash string `json:"transactionHash"`
+				L1Fee           string `json:"l1Fee"`
+			} `json:"result"`
+		}
+
+		if err := json.Unmarshal(body, &responses); err != nil {
+			log.Printf("[Adapter:%s] Failed to parse batch response: %v", a.chainID, err)
+			continue
+		}
+
+		for _, r := range responses {
+			if r.Result != nil && r.Result.L1Fee != "" {
+				// Convert hex to decimal string
+				l1FeeHex := r.Result.L1Fee
+				if strings.HasPrefix(l1FeeHex, "0x") {
+					l1FeeBig := new(big.Int)
+					l1FeeBig.SetString(l1FeeHex[2:], 16)
+					l1Fees[r.Result.TransactionHash] = l1FeeBig.String()
+				}
+			}
+		}
+
+		// Small delay between batches to avoid rate limiting
+		if end < len(hashes) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	return l1Fees, nil
+}
