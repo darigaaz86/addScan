@@ -88,6 +88,8 @@ func FromNormalizedTransaction(nt *types.NormalizedTransaction, address string) 
 	// Only create native records for non-token-transfer transactions
 	// Token transfers (from tokentx API) should NOT create native OUT records
 	// because the "from" in token transfers is the token sender, not the tx initiator
+	isUserRecipient := strings.EqualFold(nt.To, address)
+
 	if !isTokenTransfer {
 		// For normal transactions where user is the initiator and has gas:
 		// Always create a native OUT record to capture gas payment (even if value=0)
@@ -109,9 +111,12 @@ func FromNormalizedTransaction(nt *types.NormalizedTransaction, address string) 
 				nativeTx.L1Fee = *nt.L1Fee
 			}
 			records = append(records, &nativeTx)
-		} else if hasNativeValue || !hasTokenTransfers {
+		} else if hasNativeValue || !hasTokenTransfers || isUserRecipient {
 			// For internal transactions (no gas) or receiving transactions:
-			// Create native record only if there's value or no token transfers
+			// Create native record if:
+			// - There's native value, OR
+			// - No token transfers (pure native tx), OR
+			// - User is the recipient (to track all incoming txs even with 0 value)
 			nativeTx := baseTx
 			// Use high log_index for internal transactions to avoid collision with normal tx
 			// Internal transactions use 1000000 + traceIndex to differentiate from normal tx (log_index=0)

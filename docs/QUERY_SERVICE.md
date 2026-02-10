@@ -188,9 +188,10 @@ nextResult, _ := queryService.QueryNextPage(ctx, result, 50)
 The `SearchByHash` method searches for transactions by hash:
 
 ```go
-func (s *QueryService) SearchByHash(ctx context.Context, hash string) (*types.NormalizedTransaction, error)
+func (s *QueryService) SearchByHash(ctx context.Context, hash string) ([]*types.NormalizedTransaction, error)
 ```
 
+- Returns a **slice** because one transaction hash can have multiple transfer records (e.g., a swap tx has multiple ERC20 transfers)
 - Uses ClickHouse bloom filter index for fast lookup
 - Target: < 200ms response time
 - Returns `TRANSACTION_NOT_FOUND` error if not found

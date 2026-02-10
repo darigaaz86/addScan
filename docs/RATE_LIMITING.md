@@ -380,12 +380,10 @@ if err != nil {
 |--------|---------|
 | `eth_blockNumber` | 10 |
 | `eth_getBlockByNumber` | 16 |
-| `eth_getBalance` | 19 |
-| `eth_getTransactionByHash` | 17 |
-| `eth_getTransactionReceipt` | 15 |
 | `eth_getLogs` | 75 |
-| `eth_call` | 26 |
-| `alchemy_getAssetTransfers` | 150 |
+| `eth_getTransactionByHash` | 15 |
+| `eth_getTransactionReceipt` | 15 |
+| `alchemy_getAssetTransfers` | 300 (150 per call × 2 calls for in/out) |
 
 ## Sync Worker CU Usage
 

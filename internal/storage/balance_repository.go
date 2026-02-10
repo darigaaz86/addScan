@@ -81,6 +81,7 @@ func (r *BalanceRepository) getNativeBalanceFromTransactions(ctx context.Context
 		FROM transactions
 		WHERE address = ? 
 		  AND chain = ?
+		  AND transfer_type = 'native'
 		  AND status = 'success'
 	`
 

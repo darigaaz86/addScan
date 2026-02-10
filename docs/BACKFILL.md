@@ -4,9 +4,10 @@ This document describes the detailed implementation of the historical transactio
 
 ## Overview
 
-The backfill system fetches historical transactions for newly tracked addresses. It uses a two-source strategy:
-1. **Etherscan API** (primary) - Complete transaction data with gas, methodId, funcName
-2. **Alchemy RPC** (fallback) - Used when Etherscan fails or is not configured
+The backfill system fetches historical transactions for newly tracked addresses. It uses a multi-source strategy:
+1. **Etherscan API** (primary for most chains) - Complete transaction data with gas, methodId, funcName
+2. **Dune Sim API** (primary for BNB) - Etherscan free tier doesn't support BNB chain
+3. **Alchemy RPC** (fallback) - Used when primary sources fail or are not configured
 
 ## Design Decisions
 
@@ -28,6 +29,18 @@ We use Etherscan API as the primary data source because Alchemy's `alchemy_getAs
 | Function name | ✅ | ❌ Not included |
 
 Alchemy's `getAssetTransfers` only returns transactions that involve asset movement. Transactions like `approve()`, `setApprovalForAll()`, or contract interactions without transfers are not captured.
+
+### BNB Chain: Dune Sim API
+
+For BNB chain, we use **Dune Sim API** instead of Etherscan because:
+- Etherscan free tier does not support BNB chain
+- Dune Sim provides similar activity data via their `/v1/evm/activity/{address}` endpoint
+
+| Data Source | Supported Chains |
+|-------------|------------------|
+| Etherscan | Ethereum, Polygon, Arbitrum, Optimism, Base |
+| Dune Sim | BNB |
+| Alchemy (fallback) | All chains |
 
 ### Address-Based Fetching Strategy
 
@@ -308,19 +321,30 @@ Update status: "in_progress"
     ▼
 fetchHistoricalTransactions()
     │
-    ├─► Try Etherscan first
-    │       │
-    │       ▼
-    │   FetchAllTransactions()
-    │       │
-    │       ├─► txlist (normal)
-    │       ├─► txlistinternal (internal)
-    │       ├─► tokentx (ERC20)
-    │       ├─► tokennfttx (ERC721)
-    │       └─► token1155tx (ERC1155)
-    │       │
-    │       ▼
-    │   Combine all transactions
+    ├─► BNB chain? ──Yes──► Dune Sim API
+    │                           │
+    │                           ▼
+    │                       FetchAllTransactions()
+    │                           │
+    │                           ▼
+    │                       Return transactions
+    │
+    └─► Other chains? ──Yes──► Try Etherscan first
+            │
+            ▼
+        FetchAllTransactions()
+            │
+            ├─► txlist (normal)
+            ├─► txlistinternal (internal)
+            ├─► tokentx (ERC20)
+            ├─► tokennfttx (ERC721)
+            └─► token1155tx (ERC1155)
+            │
+            ▼
+        Combine all transactions
+            │
+            ▼
+        If NOTOK response → Retry forever with backoff
     │
     └─► If Etherscan fails, fallback to Alchemy
             │
@@ -427,8 +451,11 @@ See `migrations/clickhouse/001_create_transactions_table.sql`
 ### Environment Variables
 
 ```bash
-# Etherscan API (required for complete data)
+# Etherscan API (required for complete data on most chains)
 ETHERSCAN_API_KEY=your_key
+
+# Dune Sim API (required for BNB chain)
+DUNE_API_KEY=your_key
 
 # Chain RPC endpoints (Alchemy)
 ETHEREUM_RPC_PRIMARY=https://eth-mainnet.g.alchemy.com/v2/your_key
@@ -463,9 +490,42 @@ ORDER BY started_at DESC;
 
 ## Auto Re-queue Strategy
 
-The backfill system includes automatic retry for failed jobs with transient errors.
+The backfill system has two levels of retry handling:
 
-### Configuration
+### 1. Etherscan NOTOK Retry (Retry Forever)
+
+When Etherscan returns a `NOTOK` response (common on Base chain's flaky free tier), the system retries **forever** with exponential backoff:
+
+```go
+// Retry forever since we know it will eventually succeed
+baseDelay := 1 * time.Second
+maxDelay := 30 * time.Second
+
+for {
+    // ... make request ...
+    
+    // NOTOK with "Free API access" - retry forever for flaky free tier
+    if rawResp.Message == "NOTOK" {
+        attempt++
+        delay := baseDelay * time.Duration(1<<uint(min(attempt, 5))) // Cap at 32s
+        if delay > maxDelay {
+            delay = maxDelay
+        }
+        log.Printf("[Etherscan] NOTOK (attempt %d), retrying in %v", attempt, delay)
+        time.Sleep(delay)
+        continue
+    }
+}
+```
+
+This handles:
+- Base chain's flaky free tier access
+- Temporary Etherscan API issues
+- "Free API access" rate limiting
+
+### 2. Job-Level Auto Re-queue (Background Process)
+
+For jobs that fail at the job level (not Etherscan NOTOK), a background process re-queues them:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|

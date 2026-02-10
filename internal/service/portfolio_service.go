@@ -79,14 +79,6 @@ type UpdatePortfolioInput struct {
 	Description *string  `json:"description,omitempty"`
 }
 
-// GetSnapshotsInput represents input for retrieving snapshots
-type GetSnapshotsInput struct {
-	PortfolioID string    `json:"portfolioId"`
-	UserID      string    `json:"userId"`
-	DateFrom    time.Time `json:"dateFrom"`
-	DateTo      time.Time `json:"dateTo"`
-}
-
 // Output types
 
 // Portfolio represents a portfolio (same as models.Portfolio)
@@ -140,18 +132,6 @@ type DeletePortfolioResult struct {
 	Success     bool    `json:"success"`
 	PortfolioID string  `json:"portfolioId"`
 	Message     *string `json:"message,omitempty"`
-}
-
-// PortfolioSnapshot represents a daily portfolio snapshot
-type PortfolioSnapshot struct {
-	PortfolioID       string                  `json:"portfolioId"`
-	SnapshotDate      time.Time               `json:"snapshotDate"`
-	TotalBalance      types.MultiChainBalance `json:"totalBalance"`
-	TransactionCount  int64                   `json:"transactionCount"`
-	TotalVolume       string                  `json:"totalVolume"`
-	TopCounterparties []types.Counterparty    `json:"topCounterparties"`
-	TokenHoldings     []types.TokenHolding    `json:"tokenHoldings"`
-	CreatedAt         time.Time               `json:"createdAt"`
 }
 
 // CreatePortfolio creates a new portfolio with addresses
@@ -460,31 +440,6 @@ func (s *PortfolioService) GetStatistics(ctx context.Context, portfolioID, userI
 	}
 
 	return result, nil
-}
-
-// GetSnapshots retrieves daily snapshots for portfolio
-// Requirements: 16.1, 16.2, 16.3, 16.4
-func (s *PortfolioService) GetSnapshots(ctx context.Context, input *GetSnapshotsInput) ([]*PortfolioSnapshot, error) {
-	// Verify portfolio exists and user owns it
-	exists, err := s.portfolioRepo.ExistsByIDAndUser(ctx, input.PortfolioID, input.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check portfolio existence: %w", err)
-	}
-
-	if !exists {
-		return nil, &types.ServiceError{
-			Code:    "PORTFOLIO_NOT_FOUND",
-			Message: fmt.Sprintf("portfolio not found or access denied: %s", input.PortfolioID),
-			Details: map[string]interface{}{
-				"portfolioId": input.PortfolioID,
-			},
-		}
-	}
-
-	// Note: Actual snapshot retrieval is delegated to SnapshotService
-	// This method is kept for interface compatibility
-	// Use SnapshotService.GetSnapshots() directly for full functionality
-	return []*PortfolioSnapshot{}, nil
 }
 
 // aggregateBalance aggregates balances across all addresses in a portfolio

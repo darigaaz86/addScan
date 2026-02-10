@@ -355,38 +355,6 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /api/portfolios/{id}/snapshots:
-    get:
-      tags: [Portfolios]
-      summary: Get portfolio snapshots
-      operationId: getPortfolioSnapshots
-      parameters:
-        - $ref: '#/components/parameters/PortfolioIdPath'
-        - $ref: '#/components/parameters/UserIdHeader'
-        - name: dateFrom
-          in: query
-          required: true
-          schema:
-            type: string
-            format: date-time
-        - name: dateTo
-          in: query
-          required: true
-          schema:
-            type: string
-            format: date-time
-      responses:
-        '200':
-          description: Snapshots retrieved
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PortfolioSnapshot'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
   /api/search/transaction/{hash}:
     get:
       tags: [Search]
@@ -837,24 +805,6 @@ components:
           type: integer
         volume:
           type: string
-
-    PortfolioSnapshot:
-      type: object
-      properties:
-        portfolioId:
-          type: string
-          format: uuid
-        date:
-          type: string
-          format: date
-        totalBalance:
-          $ref: '#/components/schemas/MultiChainBalance'
-        transactionCount:
-          type: integer
-        tokenHoldings:
-          type: array
-          items:
-            $ref: '#/components/schemas/TokenHolding'
 
     Error:
       type: object

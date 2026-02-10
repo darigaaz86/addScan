@@ -244,25 +244,6 @@ func (s *PortfolioService) identifyTopCounterparties(transactions []*models.Tran
 3. Sort by transaction count
 4. Return top N
 
-## Snapshots
-
-Portfolio snapshots capture daily state for historical analysis.
-
-```go
-type PortfolioSnapshot struct {
-    PortfolioID       string
-    SnapshotDate      time.Time
-    TotalBalance      types.MultiChainBalance
-    TransactionCount  int64
-    TotalVolume       string
-    TopCounterparties []types.Counterparty
-    TokenHoldings     []types.TokenHolding
-    CreatedAt         time.Time
-}
-```
-
-Snapshot retrieval is delegated to SnapshotService for full functionality.
-
 ## Error Handling
 
 ### Validation Errors
@@ -331,23 +312,6 @@ CREATE TABLE portfolios (
 );
 
 CREATE INDEX idx_portfolios_user_id ON portfolios(user_id);
-```
-
-### Postgres: portfolio_snapshots
-
-```sql
-CREATE TABLE portfolio_snapshots (
-    id VARCHAR(36) PRIMARY KEY,
-    portfolio_id VARCHAR(36) NOT NULL REFERENCES portfolios(id),
-    snapshot_date DATE NOT NULL,
-    total_balance JSONB NOT NULL,
-    transaction_count BIGINT NOT NULL,
-    total_volume VARCHAR(78) NOT NULL,
-    top_counterparties JSONB,
-    token_holdings JSONB,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    UNIQUE(portfolio_id, snapshot_date)
-);
 ```
 
 ## Usage Examples

@@ -41,7 +41,7 @@ docker compose up -d
 # Step 5: Verify services
 echo ""
 echo "Step 5: Verifying services..."
-sleep 3
+sleep 10
 curl -s http://localhost:8080/health || echo "Warning: health check failed"
 echo ""
 docker compose ps

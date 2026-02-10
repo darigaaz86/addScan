@@ -324,6 +324,17 @@ func (s *BackfillService) fetchHistoricalTransactions(
 	// For BNB chain, use Dune Sim API
 	if chain == types.ChainBNB && s.duneClient != nil {
 		log.Printf("[Backfill] Using Dune for BNB chain")
+
+		// Set RPC URL for gas data enrichment
+		if chainAdapter != nil {
+			if ethAdapter, ok := chainAdapter.(*adapter.EthereumAdapter); ok {
+				rpcURL := ethAdapter.GetRPCURL()
+				if rpcURL != "" {
+					s.duneClient.SetRPCURL(rpcURL)
+				}
+			}
+		}
+
 		transactions, fetchErr = s.duneClient.FetchAllTransactions(ctx, address, chain)
 		if fetchErr != nil {
 			log.Printf("[Backfill] Warning: Dune fetch failed: %v", fetchErr)

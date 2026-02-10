@@ -151,6 +151,18 @@ func (a *EthereumAdapter) GetUnderlyingClient() *ethclient.Client {
 	return a.client
 }
 
+// GetRPCURL returns the primary RPC URL for this adapter
+func (a *EthereumAdapter) GetRPCURL() string {
+	if a.provider == nil {
+		return ""
+	}
+	url, err := a.provider.GetPrimaryURL()
+	if err != nil {
+		return ""
+	}
+	return url
+}
+
 // NormalizeTransaction converts Ethereum transaction to common format
 func (a *EthereumAdapter) NormalizeTransaction(rawTx interface{}) (*types.NormalizedTransaction, error) {
 	// Type assert to Ethereum transaction

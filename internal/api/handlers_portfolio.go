@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/address-scanner/internal/service"
 	"github.com/gorilla/mux"
@@ -191,63 +190,4 @@ func (s *Server) handleGetStatistics(w http.ResponseWriter, r *http.Request) {
 
 	// Return success response
 	respondJSON(w, http.StatusOK, statistics)
-}
-
-// handleGetSnapshots handles GET /api/portfolios/:id/snapshots - Get daily snapshots
-// Requirements: 16.1, 16.2, 16.3, 16.4
-func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
-	// Get portfolio ID from URL
-	vars := mux.Vars(r)
-	portfolioID := vars["id"]
-
-	if portfolioID == "" {
-		respondError(w, http.StatusBadRequest, ErrCodeInvalidInput, "Portfolio ID required", nil)
-		return
-	}
-
-	// Get user ID from headers
-	userID := r.Header.Get("X-User-ID")
-	if userID == "" {
-		respondError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "User ID required", nil)
-		return
-	}
-
-	// Parse query parameters for date range
-	query := r.URL.Query()
-	
-	// Parse dateFrom (required)
-	dateFromStr := query.Get("dateFrom")
-	if dateFromStr == "" {
-		respondError(w, http.StatusBadRequest, ErrCodeInvalidInput, "dateFrom parameter required", nil)
-		return
-	}
-	dateFrom, err := time.Parse(time.RFC3339, dateFromStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, ErrCodeInvalidInput, "Invalid dateFrom format (use RFC3339)", nil)
-		return
-	}
-
-	// Parse dateTo (required)
-	dateToStr := query.Get("dateTo")
-	if dateToStr == "" {
-		respondError(w, http.StatusBadRequest, ErrCodeInvalidInput, "dateTo parameter required", nil)
-		return
-	}
-	dateTo, err := time.Parse(time.RFC3339, dateToStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, ErrCodeInvalidInput, "Invalid dateTo format (use RFC3339)", nil)
-		return
-	}
-
-	// Call snapshot service (not portfolio service)
-	// The SnapshotService handles the actual snapshot retrieval
-	snapshots, err := s.snapshotService.GetSnapshots(r.Context(), portfolioID, userID, dateFrom, dateTo)
-	if err != nil {
-		statusCode, code, message := mapServiceError(err)
-		respondError(w, statusCode, code, message, nil)
-		return
-	}
-
-	// Return success response
-	respondJSON(w, http.StatusOK, snapshots)
 }

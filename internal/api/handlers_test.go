@@ -206,21 +206,6 @@ func TestSearchTransaction_InvalidHash(t *testing.T) {
 	t.Skip("Requires full service mock implementation")
 }
 
-// TestGetSnapshots_InvalidDateFormat tests snapshot retrieval with invalid date format
-func TestGetSnapshots_InvalidDateFormat(t *testing.T) {
-	server := createTestServer()
-
-	req := httptest.NewRequest("GET", "/api/portfolios/portfolio-123/snapshots?dateFrom=invalid&dateTo=2024-12-31T23:59:59Z", nil)
-	req.Header.Set("X-User-ID", "user-123")
-
-	w := httptest.NewRecorder()
-	server.router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", w.Code)
-	}
-}
-
 // TestBoundaryValues tests various boundary value conditions
 func TestBoundaryValues(t *testing.T) {
 	tests := []struct {

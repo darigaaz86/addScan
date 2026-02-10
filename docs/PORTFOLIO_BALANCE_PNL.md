@@ -256,7 +256,7 @@ PARTITION BY toYYYYMM(date);
 
 #### 3.3 Snapshot Service
 - [x] Create `internal/service/balance_snapshot_service.go`
-- [x] Methods: `CreateDailySnapshots`, `CreatePortfolioSnapshot`, `BackfillSnapshots`, `GetBalanceHistory`, `GetPortfolioHistory`
+- [x] Methods: `CreateDailySnapshots`, `BackfillSnapshots`, `GetBalanceHistory`, `GetPortfolioHistory`
 
 #### 3.4 Snapshot Worker
 - [x] Create `cmd/snapshot/main.go`

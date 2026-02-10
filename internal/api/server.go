@@ -38,11 +38,6 @@ type QueryServiceInterface interface {
 	SearchByHash(ctx context.Context, hash string) ([]*types.NormalizedTransaction, error)
 }
 
-// SnapshotServiceInterface defines the interface for snapshot service operations
-type SnapshotServiceInterface interface {
-	GetSnapshots(ctx context.Context, portfolioID, userID string, from, to time.Time) ([]*models.PortfolioSnapshot, error)
-}
-
 // BalanceSnapshotServiceInterface defines the interface for balance snapshot operations
 type BalanceSnapshotServiceInterface interface {
 	GetBalanceHistory(ctx context.Context, address, chain string, from, to time.Time) ([]storage.NativeBalanceSnapshot, error)
@@ -70,7 +65,6 @@ type Server struct {
 	addressService         AddressServiceInterface
 	portfolioService       PortfolioServiceInterface
 	queryService           QueryServiceInterface
-	snapshotService        SnapshotServiceInterface
 	balanceSnapshotService BalanceSnapshotServiceInterface
 	positionService        PositionServiceInterface
 	defiDetector           DeFiDetectorInterface
@@ -98,7 +92,6 @@ func NewServer(
 	addressService *service.AddressService,
 	portfolioService *service.PortfolioService,
 	queryService *service.QueryService,
-	snapshotService *service.SnapshotService,
 	balanceSnapshotService *service.BalanceSnapshotService,
 	positionService *service.PositionService,
 	defiDetector *service.DeFiDetector,
@@ -110,7 +103,6 @@ func NewServer(
 		addressService:         addressService,
 		portfolioService:       portfolioService,
 		queryService:           queryService,
-		snapshotService:        snapshotService,
 		balanceSnapshotService: balanceSnapshotService,
 		positionService:        positionService,
 		defiDetector:           defiDetector,
@@ -170,7 +162,6 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/portfolios/{id}", s.handleUpdatePortfolio).Methods("PUT")
 	api.HandleFunc("/portfolios/{id}", s.handleDeletePortfolio).Methods("DELETE")
 	api.HandleFunc("/portfolios/{id}/statistics", s.handleGetStatistics).Methods("GET")
-	api.HandleFunc("/portfolios/{id}/snapshots", s.handleGetSnapshots).Methods("GET")
 
 	// Search endpoints
 	api.HandleFunc("/search/transaction/{hash}", s.handleSearchTransaction).Methods("GET")

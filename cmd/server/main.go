@@ -171,7 +171,6 @@ func main() {
 	userRepo := storage.NewUserRepository(postgres)
 	addressRepo := storage.NewAddressRepository(postgres)
 	portfolioRepo := storage.NewPortfolioRepository(postgres)
-	snapshotRepo := storage.NewSnapshotRepository(postgres.Pool())
 	txRepo := storage.NewTransactionRepository(clickhouse)
 	backfillJobRepo := storage.NewBackfillJobRepository(postgres)
 	balanceRepo := storage.NewBalanceRepository(clickhouse)
@@ -218,14 +217,6 @@ func main() {
 		addressService, // Pass address service for automatic address creation
 	)
 
-	// Snapshot service
-	snapshotService := service.NewSnapshotService(
-		snapshotRepo,
-		portfolioRepo,
-		userRepo,
-		portfolioService,
-	)
-
 	// Position service (DeBank-aligned balance and protocol positions)
 	positionService := service.NewPositionService(
 		balanceRepo,
@@ -263,7 +254,7 @@ func main() {
 		PremiumTierRPS:  cfg.RateLimit.PremiumTier,
 	}
 
-	server := api.NewServer(serverConfig, addressService, portfolioService, queryService, snapshotService, balanceSnapshotService, positionService, defiDetector, userRepo, goldskyRepo)
+	server := api.NewServer(serverConfig, addressService, portfolioService, queryService, balanceSnapshotService, positionService, defiDetector, userRepo, goldskyRepo)
 
 	// Start server in a goroutine
 	go func() {

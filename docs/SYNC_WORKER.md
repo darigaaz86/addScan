@@ -94,7 +94,7 @@ The sync worker polls Alchemy RPC endpoints every 15 seconds to detect new trans
 
 ```bash
 # Enable RPC polling (in .env)
-ENABLED_CHAINS=ethereum,polygon,base
+ENABLED_CHAINS=ethereum,base,bnb
 
 # Poll interval
 ETHEREUM_POLL_INTERVAL=15s

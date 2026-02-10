@@ -178,25 +178,6 @@ func (m *mockQueryService) SearchByHash(ctx context.Context, hash string) ([]*ty
 	}, nil
 }
 
-type mockSnapshotService struct {
-	getSnapshotsFunc func(ctx context.Context, portfolioID, userID string, from, to time.Time) ([]*models.PortfolioSnapshot, error)
-}
-
-func (m *mockSnapshotService) GetSnapshots(ctx context.Context, portfolioID, userID string, from, to time.Time) ([]*models.PortfolioSnapshot, error) {
-	if m.getSnapshotsFunc != nil {
-		return m.getSnapshotsFunc(ctx, portfolioID, userID, from, to)
-	}
-	return []*models.PortfolioSnapshot{
-		{
-			PortfolioID:      portfolioID,
-			SnapshotDate:     time.Now(),
-			TotalBalance:     types.MultiChainBalance{},
-			TransactionCount: 100,
-			TotalVolume:      "50000000000000000000000",
-		},
-	}, nil
-}
-
 // Helper function to create test server
 // Note: This creates a server with mock-backed services for testing
 // For full integration tests, use real service implementations
@@ -216,14 +197,12 @@ func createTestServer() *Server {
 	addressService := &mockAddressService{}
 	portfolioService := &mockPortfolioService{}
 	queryService := &mockQueryService{}
-	snapshotService := &mockSnapshotService{}
 
 	server := &Server{
 		router:           mux.NewRouter(),
 		addressService:   addressService,
 		portfolioService: portfolioService,
 		queryService:     queryService,
-		snapshotService:  snapshotService,
 		config:           config,
 	}
 	server.setupRouter()
@@ -466,45 +445,6 @@ func TestGetStatistics_Success(t *testing.T) {
 
 	if response.TransactionCount <= 0 {
 		t.Error("Expected positive transaction count")
-	}
-}
-
-// TestGetSnapshots_Success tests successful snapshot retrieval
-func TestGetSnapshots_Success(t *testing.T) {
-	server := createTestServer()
-
-	req := httptest.NewRequest("GET", "/api/portfolios/portfolio-123/snapshots?dateFrom=2024-01-01T00:00:00Z&dateTo=2024-12-31T23:59:59Z", nil)
-	req.Header.Set("X-User-ID", "user-123")
-
-	w := httptest.NewRecorder()
-	server.router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", w.Code)
-	}
-
-	var response []*models.PortfolioSnapshot
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	if len(response) == 0 {
-		t.Error("Expected at least one snapshot")
-	}
-}
-
-// TestGetSnapshots_MissingDateParams tests snapshot retrieval without required date parameters
-func TestGetSnapshots_MissingDateParams(t *testing.T) {
-	server := createTestServer()
-
-	req := httptest.NewRequest("GET", "/api/portfolios/portfolio-123/snapshots", nil)
-	req.Header.Set("X-User-ID", "user-123")
-
-	w := httptest.NewRecorder()
-	server.router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", w.Code)
 	}
 }
 

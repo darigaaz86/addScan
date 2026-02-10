@@ -9,10 +9,8 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 ### Supported Chains
 
 - Ethereum
-- Polygon
-- Arbitrum
-- Optimism
 - Base
+- BNB (BSC)
 
 ## Architecture
 
@@ -36,16 +34,16 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 │  ┌────────────────────────┐          ┌────────────────────────┐           │
 │  │      Sync Worker       │          │    Backfill Worker     │           │
 │  │  (Real-time updates)   │          │  (Historical data)     │           │
-│  │  Alchemy RPC polling   │          │  Etherscan → Alchemy   │           │
+│  │  Alchemy RPC polling   │          │  Etherscan/Dune/Alchemy │           │
 │  └────────────────────────┘          └────────────────────────┘           │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
          │                                         │
          ▼                                         ▼
-  ┌──────────────┐                         ┌──────────────┐
-  │   Alchemy    │                         │  Etherscan   │
-  │   RPC API    │                         │     API      │
-  └──────────────┘                         └──────────────┘
+  ┌──────────────┐                    ┌────────────────────────┐
+  │   Alchemy    │                    │  Etherscan (most chains) │
+  │   RPC API    │                    │  Dune Sim (BNB chain)    │
+  └──────────────┘                    └────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    Goldsky (Internal Transactions)                           │
@@ -60,10 +58,10 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 |-----------|-------------|
 | **API Server** | REST API handling user requests, portfolio management, transaction queries |
 | **Sync Worker** | Real-time blockchain monitoring via Alchemy RPC, polls new blocks every 15 seconds |
-| **Backfill Worker** | Fetches historical transactions for newly added addresses |
+| **Backfill Worker** | Fetches historical transactions (Etherscan for most chains, Dune for BNB) |
 | **Goldsky** | Streams internal transactions (traces) via webhook for ETH/Base/BNB |
-| **Postgres** | Stores metadata: users, portfolios, addresses, backfill jobs |
-| **ClickHouse** | Stores all transactions, optimized for time-series queries |
+| **Postgres** | Stores metadata: users, portfolios, addresses, backfill jobs, protocols, tokens |
+| **ClickHouse** | Stores all transactions and balance snapshots, optimized for time-series queries |
 | **Redis** | Caches recent transactions (1000 per address, configurable TTL) |
 
 ## Data Flow
@@ -74,8 +72,9 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 2. Address validated and stored in Postgres
 3. Backfill job queued for each chain
 4. Backfill worker fetches history:
-   - **Etherscan** (primary): Complete data with gas, methodId, funcName
-   - **Alchemy** (fallback): If Etherscan fails
+   - **Etherscan** (primary for most chains): Complete data with gas, methodId, funcName
+   - **Dune Sim** (primary for BNB): Etherscan free tier doesn't support BNB
+   - **Alchemy** (fallback): If primary sources fail
 5. Transactions stored in ClickHouse
 6. Address marked as backfill complete
 
@@ -113,7 +112,11 @@ Two complementary approaches:
 | `portfolios` | Collections of addresses |
 | `addresses` | Tracked addresses per chain |
 | `backfill_jobs` | Historical sync job queue |
-| `portfolio_snapshots` | Daily portfolio snapshots |
+| `protocols` | DeFi protocol registry (Aave, Uniswap, etc.) |
+| `tokens` | Token metadata registry |
+| `protocol_contracts` | Protocol contract addresses |
+| `token_patterns` | Token symbol patterns for DeFi detection |
+| `token_whitelist` | Whitelisted tokens |
 
 ### ClickHouse Tables
 
@@ -123,13 +126,14 @@ Two complementary approaches:
 | `goldsky_traces` | Internal transactions from Goldsky |
 | `goldsky_logs` | Token events from Goldsky |
 | `unified_timeline` | Merged view of all transaction sources |
+| `balance_snapshots` | Daily balance snapshots for historical tracking |
 
 Transaction fields:
 - `hash`, `chain`, `address`, `from`, `to`, `value`
 - `timestamp`, `block_number`, `status`
-- `gas_used`, `gas_price`
+- `gas_used`, `gas_price`, `l1_fee` (for L2 chains)
 - `token_transfers` (JSON array)
-- `method_id`, `func_name`, `input`
+- `method_id`, `func_name`
 
 ## User Tiers
 
@@ -152,19 +156,34 @@ Transaction fields:
 - `POST /api/addresses` - Add address for tracking
 - `GET /api/addresses/:address` - Get address details
 - `GET /api/addresses/:address/transactions` - Get transactions
-- `GET /api/addresses/:address/balance` - Get balance
+- `GET /api/addresses/:address/balance` - Get balance (legacy)
 - `DELETE /api/addresses/:address` - Remove tracking
+
+### Address Balances (DeBank-aligned)
+- `GET /api/addresses/:address/balances` - Get token balances
+- `GET /api/addresses/:address/balances/all` - Get balances across all chains
+- `GET /api/addresses/:address/protocols` - Get DeFi protocol positions
+- `GET /api/addresses/:address/history` - Get balance history
+- `GET /api/addresses/:address/defi` - Get DeFi activity summary
+- `GET /api/addresses/:address/defi/interactions` - Get detailed DeFi interactions
 
 ### Portfolios
 - `POST /api/portfolios` - Create portfolio
-- `GET /api/portfolios/:id` - Get portfolio with aggregated data
+- `GET /api/portfolios/:id` - Get portfolio
 - `PUT /api/portfolios/:id` - Update portfolio
 - `DELETE /api/portfolios/:id` - Delete portfolio
 - `GET /api/portfolios/:id/statistics` - Get statistics
-- `GET /api/portfolios/:id/snapshots` - Get daily snapshots
+- `GET /api/portfolios/:id/balances` - Get aggregated balances
+- `GET /api/portfolios/:id/protocols` - Get protocol positions
+- `GET /api/portfolios/:id/holdings` - Get top holdings
+- `GET /api/portfolios/:id/history` - Get balance history
 
 ### Search
 - `GET /api/search/transaction/:hash` - Search by transaction hash
+
+### Goldsky Webhooks
+- `POST /goldsky/traces` - Receive internal transaction traces
+- `POST /goldsky/logs` - Receive token event logs
 
 ## Quick Start
 
@@ -210,12 +229,16 @@ REDIS_HOST=localhost
 REDIS_PORT=6379
 
 # Chains (Alchemy RPC URLs)
-ENABLED_CHAINS=ethereum,polygon,arbitrum,optimism,base
+ENABLED_CHAINS=ethereum,base,bnb
 ETHEREUM_RPC_PRIMARY=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
-POLYGON_RPC_PRIMARY=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+BASE_RPC_PRIMARY=https://base-mainnet.g.alchemy.com/v2/YOUR_KEY
+BNB_RPC_PRIMARY=https://bnb-mainnet.g.alchemy.com/v2/YOUR_KEY
 
-# Etherscan (for complete transaction history)
+# Etherscan (for complete transaction history - most chains)
 ETHERSCAN_API_KEY=YOUR_ETHERSCAN_KEY
+
+# Dune Sim (for BNB chain - Etherscan free tier doesn't support BNB)
+DUNE_API_KEY=YOUR_DUNE_KEY
 
 # Rate Limiting (Alchemy CU budget)
 ALCHEMY_CU_PER_SECOND=500
@@ -242,7 +265,8 @@ Coordinates Alchemy usage between sync worker and backfill:
 │   ├── server/      # API server entry point
 │   ├── worker/      # Sync worker entry point
 │   ├── backfill/    # Backfill worker entry point
-│   └── migrate/     # Database migration tool
+│   ├── migrate/     # Database migration tool
+│   └── snapshot/    # Daily balance snapshot worker
 ├── internal/
 │   ├── adapter/     # Blockchain adapters (Ethereum, Etherscan)
 │   ├── api/         # HTTP handlers and middleware
@@ -274,6 +298,16 @@ make build
 ```bash
 make test
 ```
+
+### Run Balance Integration Test
+
+After backfill completes, verify balance accuracy against on-chain data:
+
+```bash
+go test -v ./internal/storage -run TestBalanceIntegration -tags=integration
+```
+
+This checks all 54 addresses for native and ERC20 token balance accuracy across all enabled chains.
 
 ### Run with Docker
 
