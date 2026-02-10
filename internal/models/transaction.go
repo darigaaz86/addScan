@@ -180,26 +180,37 @@ func FromNormalizedTransaction(nt *types.NormalizedTransaction, address string) 
 		}
 
 		// Direction based on tracked address
-		// Generate unique log_index using token address hash + direction offset
-		// This ensures different tokens in same tx don't collide
-		tokenAddrHash := uint32(0)
-		for _, b := range []byte(strings.ToLower(tt.Token)) {
-			tokenAddrHash = tokenAddrHash*31 + uint32(b)
-		}
-		// Use lower 16 bits of hash (0-65535) plus base offset
-		tokenOffset := (tokenAddrHash & 0xFFFF) + uint32(i+1)
-
 		if strings.EqualFold(tt.From, address) {
 			tokenTx.Direction = types.DirectionOut
-			// OUT transfers: 1 - 99999
-			tokenTx.LogIndex = 1 + (tokenOffset % 99999)
 		} else if strings.EqualFold(tt.To, address) {
 			tokenTx.Direction = types.DirectionIn
-			// IN transfers: 100000 - 199999 (below internal tx range of 1000000+)
-			tokenTx.LogIndex = 100000 + (tokenOffset % 99999)
 		} else {
 			// Skip if tracked address is not involved in this transfer
 			continue
+		}
+
+		// Generate log_index:
+		// 1. If LogIndex is provided (from Moralis), use it directly
+		// 2. Otherwise, generate unique log_index using token address hash (for Etherscan)
+		if tt.LogIndex != nil {
+			tokenTx.LogIndex = uint32(*tt.LogIndex)
+		} else {
+			// Generate unique log_index using token address hash + direction offset
+			// This ensures different tokens in same tx don't collide
+			tokenAddrHash := uint32(0)
+			for _, b := range []byte(strings.ToLower(tt.Token)) {
+				tokenAddrHash = tokenAddrHash*31 + uint32(b)
+			}
+			// Use lower 16 bits of hash (0-65535) plus base offset
+			tokenOffset := (tokenAddrHash & 0xFFFF) + uint32(i+1)
+
+			if tokenTx.Direction == types.DirectionOut {
+				// OUT transfers: 1 - 99999
+				tokenTx.LogIndex = 1 + (tokenOffset % 99999)
+			} else {
+				// IN transfers: 100000 - 199999 (below internal tx range of 1000000+)
+				tokenTx.LogIndex = 100000 + (tokenOffset % 99999)
+			}
 		}
 
 		records = append(records, &tokenTx)

@@ -179,11 +179,12 @@ func main() {
 
 	// Create backfill service with rate controller support
 	// The rate controller is optional - if nil, the service operates without rate limiting
-	backfillService := service.NewBackfillServiceWithRateController(
+	backfillService := service.NewBackfillServiceFull(
 		backfillRepo,
 		txRepo,
 		chainAdapters,
 		cfg.Etherscan.APIKey,
+		cfg.Dune.APIKey,
 		rateController,
 	)
 

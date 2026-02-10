@@ -21,6 +21,7 @@ type BackfillService struct {
 	txRepo          *storage.TransactionRepository
 	chainAdapters   map[types.ChainID]adapter.ChainAdapter
 	etherscanClient *adapter.EtherscanClient
+	duneClient      *adapter.DuneClient
 	rateController  *ratelimit.BackfillRateController
 	stopAutoRequeue chan struct{}
 }
@@ -83,6 +84,41 @@ func NewBackfillServiceWithRateController(
 		txRepo:          txRepo,
 		chainAdapters:   chainAdapters,
 		etherscanClient: etherscanClient,
+		rateController:  rateController,
+	}
+}
+
+// NewBackfillServiceFull creates a backfill service with all data providers.
+func NewBackfillServiceFull(
+	backfillRepo *storage.BackfillJobRepository,
+	txRepo *storage.TransactionRepository,
+	chainAdapters map[types.ChainID]adapter.ChainAdapter,
+	etherscanAPIKey string,
+	duneAPIKey string,
+	rateController *ratelimit.BackfillRateController,
+) *BackfillService {
+	var etherscanClient *adapter.EtherscanClient
+	if etherscanAPIKey != "" {
+		etherscanClient = adapter.NewEtherscanClient(etherscanAPIKey)
+		log.Printf("[Backfill] Etherscan client initialized for complete transaction history")
+	}
+
+	var duneClient *adapter.DuneClient
+	if duneAPIKey != "" {
+		duneClient = adapter.NewDuneClient(duneAPIKey)
+		log.Printf("[Backfill] Dune client initialized for BNB chain support")
+	}
+
+	if rateController != nil {
+		log.Printf("[Backfill] Rate controller initialized for CU budget management")
+	}
+
+	return &BackfillService{
+		backfillRepo:    backfillRepo,
+		txRepo:          txRepo,
+		chainAdapters:   chainAdapters,
+		etherscanClient: etherscanClient,
+		duneClient:      duneClient,
 		rateController:  rateController,
 	}
 }
@@ -281,16 +317,35 @@ func (s *BackfillService) fetchHistoricalTransactions(
 
 	// Fetch from Etherscan (complete transaction list - all 5 types)
 	// This is the source of truth as it returns each transfer separately
+	// Note: For BNB chain, use Dune Sim API (Etherscan free tier doesn't support BNB)
 	var transactions []*types.NormalizedTransaction
-	var etherscanErr error
+	var fetchErr error
 
-	if s.etherscanClient != nil {
+	// For BNB chain, use Dune Sim API
+	if chain == types.ChainBNB && s.duneClient != nil {
+		log.Printf("[Backfill] Using Dune for BNB chain")
+		transactions, fetchErr = s.duneClient.FetchAllTransactions(ctx, address, chain)
+		if fetchErr != nil {
+			log.Printf("[Backfill] Warning: Dune fetch failed: %v", fetchErr)
+		} else {
+			log.Printf("[Backfill] Dune returned %d transactions for %s", len(transactions), address)
+			return transactions, nil
+		}
+	}
+
+	// For other chains (or BNB fallback), use Etherscan
+	var etherscanErr error
+	if s.etherscanClient != nil && chain != types.ChainBNB {
 		transactions, etherscanErr = s.etherscanClient.FetchAllTransactions(ctx, address, chain)
 		if etherscanErr != nil {
 			log.Printf("[Backfill] Warning: Etherscan fetch failed: %v", etherscanErr)
 		} else {
 			log.Printf("[Backfill] Etherscan returned %d transactions for %s", len(transactions), address)
 		}
+	} else if chain == types.ChainBNB {
+		// BNB without Dune - skip Etherscan (not supported on free tier)
+		log.Printf("[Backfill] Skipping Etherscan for BNB chain (not supported on free tier)")
+		etherscanErr = fmt.Errorf("BNB chain not supported on Etherscan free tier")
 	}
 
 	// Only fall back to Alchemy if Etherscan FAILED (not just returned 0 results)

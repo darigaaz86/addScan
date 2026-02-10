@@ -132,6 +132,7 @@ type TokenTransfer struct {
 	Symbol   *string `json:"symbol,omitempty"`   // Token symbol (e.g., "USDC")
 	Decimals *int    `json:"decimals,omitempty"` // Token decimals
 	TokenID  *string `json:"tokenId,omitempty"`  // Token ID for NFTs (ERC721/ERC1155)
+	LogIndex *int    `json:"logIndex,omitempty"` // Log index from blockchain (used by Moralis)
 }
 
 // TokenBalance represents balance for a specific token

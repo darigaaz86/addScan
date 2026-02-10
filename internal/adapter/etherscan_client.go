@@ -299,32 +299,44 @@ func (c *EtherscanClient) FetchAllTransactions(ctx context.Context, address stri
 
 // fetchTransactionList fetches normal/internal transactions using Etherscan API
 func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address string, chain types.ChainID, chainID int, action string) ([]*types.NormalizedTransaction, error) {
-	// Throttle requests per chain to avoid 429
-	c.throttle(chainID)
-
 	url := fmt.Sprintf("%s?chainid=%d&module=account&action=%s&address=%s&sort=desc&apikey=%s",
 		c.baseURL, chainID, action, address, c.apiKey)
 
-	body, err := c.doRequest(ctx, url, chainID)
-	if err != nil {
-		return nil, err
-	}
+	// Retry loop for flaky free tier access (Base, BNB, OP)
+	// Retry forever since we know it will eventually succeed
+	baseDelay := 1 * time.Second
+	maxDelay := 30 * time.Second
 
-	// Check if result is a string (error message like "No transactions found")
 	var rawResp struct {
 		Status  string          `json:"status"`
 		Message string          `json:"message"`
 		Result  json.RawMessage `json:"result"`
 	}
-	if err := json.Unmarshal(body, &rawResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
 
-	// If status is not "1", check for known empty responses
-	if rawResp.Status != "1" {
-		// Log the actual response for debugging
-		log.Printf("[Etherscan] %s response for %s: status=%s, message=%s, result=%s",
-			action, address, rawResp.Status, rawResp.Message, string(rawResp.Result[:min(100, len(rawResp.Result))]))
+	attempt := 0
+	for {
+		// Throttle requests per chain to avoid 429
+		c.throttle(chainID)
+
+		body, err := c.doRequest(ctx, url, chainID)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := json.Unmarshal(body, &rawResp); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		// If status is "1", success - break out of retry loop
+		if rawResp.Status == "1" {
+			break
+		}
+
+		// Log the actual response for debugging (only first few attempts)
+		if attempt < 3 {
+			log.Printf("[Etherscan] %s response for %s: status=%s, message=%s, result=%s",
+				action, address, rawResp.Status, rawResp.Message, string(rawResp.Result[:min(100, len(rawResp.Result))]))
+		}
 
 		if rawResp.Message == "No transactions found" || rawResp.Message == "No records found" {
 			return []*types.NormalizedTransaction{}, nil
@@ -333,9 +345,36 @@ func (c *EtherscanClient) fetchTransactionList(ctx context.Context, address stri
 		if rawResp.Message == "NOTOK" && strings.Contains(string(rawResp.Result), "No record") {
 			return []*types.NormalizedTransaction{}, nil
 		}
-		// Other NOTOK responses might be rate limiting or errors - return error to trigger retry
+		// NOTOK with "Free API access" - retry forever for flaky free tier
+		if rawResp.Message == "NOTOK" && strings.Contains(string(rawResp.Result), "Free API access") {
+			attempt++
+			delay := baseDelay * time.Duration(1<<uint(min(attempt, 5))) // Cap exponential at 32s
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			log.Printf("[Etherscan] Free tier flaky for %s %s (attempt %d), retrying in %v",
+				action, address, attempt, delay)
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+		}
+		// Other NOTOK responses - also retry forever (could be temporary)
 		if rawResp.Message == "NOTOK" {
-			return nil, fmt.Errorf("etherscan API returned NOTOK: %s", string(rawResp.Result))
+			attempt++
+			delay := baseDelay * time.Duration(1<<uint(min(attempt, 5)))
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			log.Printf("[Etherscan] NOTOK on chain %d (attempt %d), retrying in %v", chainID, attempt, delay)
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
 		}
 		return nil, fmt.Errorf("etherscan API error: %s", rawResp.Message)
 	}
@@ -531,6 +570,23 @@ func (c *EtherscanClient) fetchERC1155Transfers(ctx context.Context, address str
 	}
 
 	return transactions, nil
+}
+
+// isRetryableNOTOK checks if a NOTOK response should be retried
+// Some chains (Base, BNB, OP) have flaky free tier access
+func (c *EtherscanClient) isRetryableNOTOK(body []byte) bool {
+	var resp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false
+	}
+	// Retry NOTOK responses that aren't "No records found" type
+	if resp.Status == "0" && resp.Message == "NOTOK" {
+		return true
+	}
+	return false
 }
 
 // doRequest performs HTTP request with retry logic for rate limiting (429)
