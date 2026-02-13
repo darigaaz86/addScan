@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -911,4 +912,109 @@ func (c *EtherscanClient) FetchTransactionsInRange(ctx context.Context, address 
 	}
 
 	return transactions, nil
+}
+
+// FetchL1Fees fetches L1 fees for L2 transactions via Etherscan's eth_getTransactionReceipt proxy.
+// This avoids using Alchemy RPC (which may be rate-limited) since Etherscan returns l1Fee in receipts.
+
+func (c *EtherscanClient) FetchL1Fees(ctx context.Context, txHashes map[string]bool, chain types.ChainID) (map[string]string, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("etherscan API key not configured")
+	}
+
+	chainID := c.GetChainID(chain)
+	l1Fees := make(map[string]string)
+
+	baseDelay := 1 * time.Second
+	maxDelay := 30 * time.Second
+
+	for hash := range txHashes {
+		select {
+		case <-ctx.Done():
+			return l1Fees, ctx.Err()
+		default:
+		}
+
+		// Retry loop for free tier NOTOK responses
+		attempt := 0
+		for {
+			c.throttle(chainID)
+
+			reqURL := fmt.Sprintf("%s?chainid=%d&module=proxy&action=eth_getTransactionReceipt&txhash=%s&apikey=%s",
+				c.baseURL, chainID, hash, c.apiKey)
+
+			body, err := c.doRequest(ctx, reqURL, chainID)
+			if err != nil {
+				log.Printf("[Etherscan] Warning: failed to get receipt for %s: %v", hash[:10], err)
+				break // move to next hash
+			}
+
+			// First check if this is a NOTOK response (free tier rate limit)
+			var statusResp struct {
+				Status  string          `json:"status"`
+				Message string          `json:"message"`
+				Result  json.RawMessage `json:"result"`
+			}
+			if err := json.Unmarshal(body, &statusResp); err != nil {
+				log.Printf("[Etherscan] Warning: failed to parse receipt for %s: %v", hash[:10], err)
+				break
+			}
+
+			// Proxy module success: no "status" field, just "jsonrpc"/"id"/"result"
+			// NOTOK: has "status":"0" and "message":"NOTOK"
+			if statusResp.Message == "NOTOK" {
+				attempt++
+				delay := baseDelay * time.Duration(1<<uint(min(attempt, 5)))
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+				if attempt <= 3 {
+					log.Printf("[Etherscan] L1Fee NOTOK for %s (attempt %d), retrying in %v: %s",
+						hash[:10], attempt, delay, string(statusResp.Result))
+				}
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return l1Fees, ctx.Err()
+				}
+			}
+
+			// Parse the proxy response (jsonrpc format)
+			var resp struct {
+				Result json.RawMessage `json:"result"`
+			}
+			if err := json.Unmarshal(body, &resp); err != nil {
+				log.Printf("[Etherscan] Warning: failed to parse receipt for %s: %v", hash[:10], err)
+				break
+			}
+
+			// result can be a string (error) or an object (receipt)
+			if resp.Result == nil || len(resp.Result) == 0 || resp.Result[0] == '"' {
+				break
+			}
+
+			var receipt struct {
+				L1Fee string `json:"l1Fee"`
+			}
+			if err := json.Unmarshal(resp.Result, &receipt); err != nil {
+				log.Printf("[Etherscan] Warning: failed to parse receipt object for %s: %v", hash[:10], err)
+				break
+			}
+
+			if receipt.L1Fee != "" {
+				l1FeeHex := receipt.L1Fee
+				if strings.HasPrefix(l1FeeHex, "0x") {
+					l1FeeBig := new(big.Int)
+					l1FeeBig.SetString(l1FeeHex[2:], 16)
+					l1Fees[hash] = l1FeeBig.String()
+				}
+			}
+
+			break // success, move to next hash
+		}
+	}
+
+	log.Printf("[Etherscan] Fetched L1 fees for %d/%d transactions", len(l1Fees), len(txHashes))
+	return l1Fees, nil
 }

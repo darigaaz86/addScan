@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/address-scanner/internal/adapter"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -78,35 +79,38 @@ func testChainBalances(t *testing.T, chConn clickhouse.Conn, chain string, addre
 		return
 	}
 
-	// Get RPC URL
-	rpcURL := os.Getenv(cfg.rpcEnvVar)
-	if rpcURL == "" {
-		rpcURL = os.Getenv(strings.Replace(cfg.rpcEnvVar, "_URLS", "_PRIMARY", 1))
+	// Get RPC URLs (comma-separated for pool)
+	rpcURLs := os.Getenv(cfg.rpcEnvVar)
+	if rpcURLs == "" {
+		// Fallback to legacy single URL
+		rpcURLs = os.Getenv(strings.Replace(cfg.rpcEnvVar, "_URLS", "_PRIMARY", 1))
 	}
-	if rpcURL == "" {
+	if rpcURLs == "" {
 		t.Skipf("No RPC URL configured for %s", chain)
 		return
 	}
-	rpcURL = strings.Split(rpcURL, ",")[0]
 
-	client, err := ethclient.Dial(rpcURL)
+	// Create RPC pool with failover support
+	pool, err := adapter.NewRPCPoolFromURLs(rpcURLs)
 	if err != nil {
-		t.Fatalf("Failed to connect to RPC: %v", err)
+		t.Fatalf("Failed to create RPC pool: %v", err)
 	}
-	defer client.Close()
+	defer pool.Close()
+
+	t.Logf("RPC pool created with %d endpoints for %s", pool.EndpointCount(), chain)
 
 	// Test native balances
 	t.Run("NativeBalances", func(t *testing.T) {
-		testNativeBalances(t, chConn, client, chain, addresses, cfg.nativeSymbol)
+		testNativeBalances(t, chConn, pool, chain, addresses, cfg.nativeSymbol)
 	})
 
 	// Test token balances
 	t.Run("TokenBalances", func(t *testing.T) {
-		testTokenBalances(t, chConn, client, chain, addresses)
+		testTokenBalances(t, chConn, pool, chain, addresses)
 	})
 }
 
-func testNativeBalances(t *testing.T, chConn clickhouse.Conn, client *ethclient.Client, chain string, addresses []string, symbol string) {
+func testNativeBalances(t *testing.T, chConn clickhouse.Conn, pool *adapter.RPCPool, chain string, addresses []string, symbol string) {
 	var matched, mismatched, skipped int
 	var mismatchedAddrs []string
 
@@ -121,7 +125,7 @@ func testNativeBalances(t *testing.T, chConn clickhouse.Conn, client *ethclient.
 			continue
 		}
 
-		onChainBalance, err := getTestOnChainBalance(ctx, client, addr)
+		onChainBalance, err := getTestOnChainBalanceWithPool(ctx, pool, addr)
 		if err != nil {
 			t.Logf("%s - ERROR getting on-chain balance: %v", addr[:10], err)
 			cancel()
@@ -143,7 +147,7 @@ func testNativeBalances(t *testing.T, chConn clickhouse.Conn, client *ethclient.
 			mismatchedAddrs = append(mismatchedAddrs, addr)
 		}
 
-		time.Sleep(100 * time.Millisecond) // Rate limit
+		time.Sleep(200 * time.Millisecond) // Rate limit between calls
 	}
 
 	t.Logf("Native balance summary: Matched=%d, Mismatched=%d, Skipped=%d", matched, mismatched, skipped)
@@ -156,7 +160,7 @@ func testNativeBalances(t *testing.T, chConn clickhouse.Conn, client *ethclient.
 	}
 }
 
-func testTokenBalances(t *testing.T, chConn clickhouse.Conn, client *ethclient.Client, chain string, addresses []string) {
+func testTokenBalances(t *testing.T, chConn clickhouse.Conn, pool *adapter.RPCPool, chain string, addresses []string) {
 	// Get all token balances from DB
 	balances, err := getTestDBTokenBalances(context.Background(), chConn, chain, addresses)
 	if err != nil {
@@ -179,9 +183,9 @@ func testTokenBalances(t *testing.T, chConn clickhouse.Conn, client *ethclient.C
 	var matched, mismatched, skipped int
 
 	for _, bal := range balances {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
-		onChainBal, err := getTestOnChainTokenBalance(ctx, client, parsedABI, bal.Address, bal.TokenAddress)
+		onChainBal, err := getTestOnChainTokenBalanceWithPool(ctx, pool, parsedABI, bal.Address, bal.TokenAddress)
 		cancel()
 
 		if err != nil {
@@ -202,7 +206,7 @@ func testTokenBalances(t *testing.T, chConn clickhouse.Conn, client *ethclient.C
 			mismatched++
 		}
 
-		time.Sleep(100 * time.Millisecond) // Rate limit
+		time.Sleep(200 * time.Millisecond) // Rate limit between calls
 	}
 
 	t.Logf("Token balance summary: Matched=%d, Mismatched=%d, Skipped=%d", matched, mismatched, skipped)
@@ -265,34 +269,19 @@ func getTestDBNativeBalance(ctx context.Context, chConn clickhouse.Conn, address
 	address = strings.ToLower(address)
 
 	query := `
-		SELECT 
-			toString(sum(CASE WHEN direction = 'in' THEN toDecimal256(value, 0) ELSE toDecimal256(0, 0) END)) as total_in,
-			toString(sum(CASE WHEN direction = 'out' THEN toDecimal256(value, 0) ELSE toDecimal256(0, 0) END)) as total_out,
-			toString(sum(toUInt256OrZero(gas_used) * toUInt256OrZero(gas_price))) as gas_spent,
-			toString(sum(toUInt256OrZero(l1_fee))) as l1_fee_spent
-		FROM transactions
-		WHERE address = ? AND chain = ? AND transfer_type = 'native'
+		SELECT toString(balance)
+		FROM native_balances_final
+		WHERE address = ? AND chain = ?
 	`
 
-	var totalInStr, totalOutStr, gasSpentStr, l1FeeSpentStr string
+	var balanceStr string
 	row := chConn.QueryRow(ctx, query, address, chain)
-	if err := row.Scan(&totalInStr, &totalOutStr, &gasSpentStr, &l1FeeSpentStr); err != nil {
+	if err := row.Scan(&balanceStr); err != nil {
 		return big.NewInt(0), err
 	}
 
-	totalIn := new(big.Int)
-	totalOut := new(big.Int)
-	gasSpent := new(big.Int)
-	l1FeeSpent := new(big.Int)
-	totalIn.SetString(totalInStr, 10)
-	totalOut.SetString(totalOutStr, 10)
-	gasSpent.SetString(gasSpentStr, 10)
-	l1FeeSpent.SetString(l1FeeSpentStr, 10)
-
-	// Balance = totalIn - totalOut - gasSpent - l1FeeSpent
-	balance := new(big.Int).Sub(totalIn, totalOut)
-	balance.Sub(balance, gasSpent)
-	balance.Sub(balance, l1FeeSpent)
+	balance := new(big.Int)
+	balance.SetString(balanceStr, 10)
 
 	return balance, nil
 }
@@ -300,6 +289,34 @@ func getTestDBNativeBalance(ctx context.Context, chConn clickhouse.Conn, address
 func getTestOnChainBalance(ctx context.Context, client *ethclient.Client, address string) (*big.Int, error) {
 	addr := common.HexToAddress(address)
 	return client.BalanceAt(ctx, addr, nil)
+}
+
+// getTestOnChainBalanceWithPool fetches on-chain balance using the RPC pool.
+// On 429/rate-limit errors, it fails over to the next endpoint and retries.
+const maxRPCRetries = 3
+
+func getTestOnChainBalanceWithPool(ctx context.Context, pool *adapter.RPCPool, address string) (*big.Int, error) {
+	addr := common.HexToAddress(address)
+
+	for attempt := 0; attempt <= maxRPCRetries; attempt++ {
+		balance, err := pool.GetClient().BalanceAt(ctx, addr, nil)
+		if err == nil {
+			return balance, nil
+		}
+
+		if adapter.IsRateLimitError(err) {
+			if failoverErr := pool.OnRateLimited(ctx); failoverErr != nil {
+				return nil, fmt.Errorf("all endpoints exhausted: %w", failoverErr)
+			}
+			// Brief pause after failover before retry
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("failed after %d retries", maxRPCRetries)
 }
 
 func getTestDBTokenBalances(ctx context.Context, chConn clickhouse.Conn, chain string, addresses []string) ([]testTokenBalance, error) {
@@ -314,14 +331,10 @@ func getTestDBTokenBalances(ctx context.Context, chConn clickhouse.Conn, chain s
 			address,
 			token_address,
 			token_symbol,
-			toString(sumIf(toInt256OrZero(value), direction = 'in') - sumIf(toInt256OrZero(value), direction = 'out')) as balance
-		FROM transactions 
+			toString(balance) as balance
+		FROM token_balances_final
 		WHERE chain = ?
-		AND transfer_type = 'erc20'
-		AND is_spam = 0
 		AND address IN (?)
-		GROUP BY address, token_address, token_symbol
-		HAVING balance != '0'
 		ORDER BY address, token_symbol
 	`
 
@@ -364,4 +377,40 @@ func getTestOnChainTokenBalance(ctx context.Context, client *ethclient.Client, p
 	}
 
 	return new(big.Int).SetBytes(result), nil
+}
+
+// getTestOnChainTokenBalanceWithPool fetches on-chain token balance using the RPC pool.
+func getTestOnChainTokenBalanceWithPool(ctx context.Context, pool *adapter.RPCPool, parsedABI abi.ABI, owner, token string) (*big.Int, error) {
+	tokenAddr := common.HexToAddress(token)
+	ownerAddr := common.HexToAddress(owner)
+
+	data, err := parsedABI.Pack("balanceOf", ownerAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	for attempt := 0; attempt <= maxRPCRetries; attempt++ {
+		result, err := pool.GetClient().CallContract(ctx, ethereum.CallMsg{
+			To:   &tokenAddr,
+			Data: data,
+		}, nil)
+		if err == nil {
+			if len(result) == 0 {
+				return big.NewInt(0), nil
+			}
+			return new(big.Int).SetBytes(result), nil
+		}
+
+		if adapter.IsRateLimitError(err) {
+			if failoverErr := pool.OnRateLimited(ctx); failoverErr != nil {
+				return nil, fmt.Errorf("all endpoints exhausted: %w", failoverErr)
+			}
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("failed after %d retries", maxRPCRetries)
 }

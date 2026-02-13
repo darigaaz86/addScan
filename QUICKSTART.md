@@ -8,7 +8,7 @@ Get the Address Scanner running locally in 5 minutes.
 - Go 1.21+
 - Etherscan API Key (free at https://etherscan.io/apis)
 - Alchemy API Key (free at https://www.alchemy.com/)
-- Dune API Key (optional, for BNB chain - https://dune.com/)
+- NodeReal MegaNode URL (optional, for BNB chain - https://nodereal.io/)
 
 ## Setup
 
@@ -24,15 +24,15 @@ Edit `.env` with your API keys:
 # Required for transaction history (most chains)
 ETHERSCAN_API_KEY=your_etherscan_key
 
-# Required for BNB chain (Etherscan free tier doesn't support BNB)
-DUNE_API_KEY=your_dune_key
+# Required for BNB chain (Etherscan V2 doesn't support BNB on free tier)
+NODEREAL_BSC_RPC_URL=your_nodereal_url
 
 # Required for blockchain RPC
 ETHEREUM_RPC_PRIMARY=https://eth-mainnet.g.alchemy.com/v2/your_alchemy_key
 ```
 
 Etherscan provides complete transaction data (gas, methodId, funcName).
-Dune Sim API provides BNB chain data (Etherscan free tier doesn't support BNB).
+NodeReal MegaNode provides BNB chain data (Etherscan V2 doesn't support BNB on free tier).
 Alchemy provides real-time blockchain access and fallback for backfill.
 
 ### 2. Start Infrastructure Services Only

@@ -23,7 +23,7 @@ type Config struct {
 	RateLimit RateLimitConfig
 	Logging   LoggingConfig
 	Etherscan EtherscanConfig
-	Dune      DuneConfig
+	NodeReal  NodeRealConfig
 }
 
 // EtherscanConfig holds Etherscan API configuration
@@ -31,9 +31,9 @@ type EtherscanConfig struct {
 	APIKey string
 }
 
-// DuneConfig holds Dune Sim API configuration
-type DuneConfig struct {
-	APIKey string
+// NodeRealConfig holds NodeReal MegaNode API configuration
+type NodeRealConfig struct {
+	RPCURL string
 }
 
 // ServerConfig holds server configuration
@@ -183,8 +183,8 @@ func LoadConfig() (*Config, error) {
 		Etherscan: EtherscanConfig{
 			APIKey: getEnv("ETHERSCAN_API_KEY", ""),
 		},
-		Dune: DuneConfig{
-			APIKey: getEnv("DUNE_API_KEY", ""),
+		NodeReal: NodeRealConfig{
+			RPCURL: getEnv("NODEREAL_BSC_RPC_URL", ""),
 		},
 	}
 

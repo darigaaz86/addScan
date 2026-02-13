@@ -6,7 +6,7 @@ This document describes the detailed implementation of the historical transactio
 
 The backfill system fetches historical transactions for newly tracked addresses. It uses a multi-source strategy:
 1. **Etherscan API** (primary for most chains) - Complete transaction data with gas, methodId, funcName
-2. **Dune Sim API** (primary for BNB) - Etherscan free tier doesn't support BNB chain
+2. **NodeReal MegaNode** (primary for BNB) - Etherscan V2 doesn't support BNB on free tier
 3. **Alchemy RPC** (fallback) - Used when primary sources fail or are not configured
 
 ## Design Decisions
@@ -30,16 +30,16 @@ We use Etherscan API as the primary data source because Alchemy's `alchemy_getAs
 
 Alchemy's `getAssetTransfers` only returns transactions that involve asset movement. Transactions like `approve()`, `setApprovalForAll()`, or contract interactions without transfers are not captured.
 
-### BNB Chain: Dune Sim API
+### BNB Chain: NodeReal MegaNode
 
-For BNB chain, we use **Dune Sim API** instead of Etherscan because:
-- Etherscan free tier does not support BNB chain
-- Dune Sim provides similar activity data via their `/v1/evm/activity/{address}` endpoint
+For BNB chain, we use **NodeReal MegaNode** instead of Etherscan because:
+- Etherscan V2 does not support BNB chain on free tier
+- NodeReal provides `nr_getAssetTransfers` which returns all transfer types including internal transfers
 
 | Data Source | Supported Chains |
 |-------------|------------------|
 | Etherscan | Ethereum, Polygon, Arbitrum, Optimism, Base |
-| Dune Sim | BNB |
+| NodeReal MegaNode | BNB |
 | Alchemy (fallback) | All chains |
 
 ### Address-Based Fetching Strategy
@@ -321,7 +321,7 @@ Update status: "in_progress"
     ▼
 fetchHistoricalTransactions()
     │
-    ├─► BNB chain? ──Yes──► Dune Sim API
+    ├─► BNB chain? ──Yes──► NodeReal MegaNode
     │                           │
     │                           ▼
     │                       FetchAllTransactions()
@@ -454,8 +454,8 @@ See `migrations/clickhouse/001_create_transactions_table.sql`
 # Etherscan API (required for complete data on most chains)
 ETHERSCAN_API_KEY=your_key
 
-# Dune Sim API (required for BNB chain)
-DUNE_API_KEY=your_key
+# NodeReal MegaNode (required for BNB chain)
+NODEREAL_BSC_RPC_URL=your_nodereal_url
 
 # Chain RPC endpoints (Alchemy)
 ETHEREUM_RPC_PRIMARY=https://eth-mainnet.g.alchemy.com/v2/your_key

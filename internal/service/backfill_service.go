@@ -21,7 +21,7 @@ type BackfillService struct {
 	txRepo          *storage.TransactionRepository
 	chainAdapters   map[types.ChainID]adapter.ChainAdapter
 	etherscanClient *adapter.EtherscanClient
-	duneClient      *adapter.DuneClient
+	nodeRealClient  *adapter.NodeRealClient
 	rateController  *ratelimit.BackfillRateController
 	stopAutoRequeue chan struct{}
 }
@@ -94,7 +94,7 @@ func NewBackfillServiceFull(
 	txRepo *storage.TransactionRepository,
 	chainAdapters map[types.ChainID]adapter.ChainAdapter,
 	etherscanAPIKey string,
-	duneAPIKey string,
+	nodeRealURL string,
 	rateController *ratelimit.BackfillRateController,
 ) *BackfillService {
 	var etherscanClient *adapter.EtherscanClient
@@ -103,10 +103,10 @@ func NewBackfillServiceFull(
 		log.Printf("[Backfill] Etherscan client initialized for complete transaction history")
 	}
 
-	var duneClient *adapter.DuneClient
-	if duneAPIKey != "" {
-		duneClient = adapter.NewDuneClient(duneAPIKey)
-		log.Printf("[Backfill] Dune client initialized for BNB chain support")
+	var nodeRealClient *adapter.NodeRealClient
+	if nodeRealURL != "" {
+		nodeRealClient = adapter.NewNodeRealClient(nodeRealURL)
+		log.Printf("[Backfill] NodeReal client initialized for BNB chain support")
 	}
 
 	if rateController != nil {
@@ -118,7 +118,7 @@ func NewBackfillServiceFull(
 		txRepo:          txRepo,
 		chainAdapters:   chainAdapters,
 		etherscanClient: etherscanClient,
-		duneClient:      duneClient,
+		nodeRealClient:  nodeRealClient,
 		rateController:  rateController,
 	}
 }
@@ -260,11 +260,10 @@ func (s *BackfillService) processBackfill(ctx context.Context, job *models.Backf
 		return nil
 	}
 
-	// For L2 chains, fetch L1 fees from RPC
+	// For L2 chains, fetch L1 fees from Etherscan receipt proxy
 	if types.IsL2Chain(job.Chain) {
 		if err := s.enrichL1Fees(ctx, chainAdapter, transactions); err != nil {
-			log.Printf("[Backfill] Warning: failed to enrich L1 fees: %v", err)
-			// Continue without L1 fees - better to have partial data than none
+			return fmt.Errorf("failed to enrich L1 fees: %w", err)
 		}
 	}
 
@@ -317,29 +316,19 @@ func (s *BackfillService) fetchHistoricalTransactions(
 
 	// Fetch from Etherscan (complete transaction list - all 5 types)
 	// This is the source of truth as it returns each transfer separately
-	// Note: For BNB chain, use Dune Sim API (Etherscan free tier doesn't support BNB)
+	// Note: For BNB chain, use NodeReal MegaNode (Etherscan V2 doesn't support BNB on free tier)
 	var transactions []*types.NormalizedTransaction
 	var fetchErr error
 
-	// For BNB chain, use Dune Sim API
-	if chain == types.ChainBNB && s.duneClient != nil {
-		log.Printf("[Backfill] Using Dune for BNB chain")
+	// For BNB chain, use NodeReal MegaNode
+	if chain == types.ChainBNB && s.nodeRealClient != nil {
+		log.Printf("[Backfill] Using NodeReal for BNB chain")
 
-		// Set RPC URL for gas data enrichment
-		if chainAdapter != nil {
-			if ethAdapter, ok := chainAdapter.(*adapter.EthereumAdapter); ok {
-				rpcURL := ethAdapter.GetRPCURL()
-				if rpcURL != "" {
-					s.duneClient.SetRPCURL(rpcURL)
-				}
-			}
-		}
-
-		transactions, fetchErr = s.duneClient.FetchAllTransactions(ctx, address, chain)
+		transactions, fetchErr = s.nodeRealClient.FetchAllTransactions(ctx, address, chain)
 		if fetchErr != nil {
-			log.Printf("[Backfill] Warning: Dune fetch failed: %v", fetchErr)
+			log.Printf("[Backfill] Warning: NodeReal fetch failed: %v", fetchErr)
 		} else {
-			log.Printf("[Backfill] Dune returned %d transactions for %s", len(transactions), address)
+			log.Printf("[Backfill] NodeReal returned %d transactions for %s", len(transactions), address)
 			return transactions, nil
 		}
 	}
@@ -354,7 +343,7 @@ func (s *BackfillService) fetchHistoricalTransactions(
 			log.Printf("[Backfill] Etherscan returned %d transactions for %s", len(transactions), address)
 		}
 	} else if chain == types.ChainBNB {
-		// BNB without Dune - skip Etherscan (not supported on free tier)
+		// BNB without NodeReal - skip Etherscan (not supported on free tier)
 		log.Printf("[Backfill] Skipping Etherscan for BNB chain (not supported on free tier)")
 		etherscanErr = fmt.Errorf("BNB chain not supported on Etherscan free tier")
 	}
@@ -433,12 +422,6 @@ func stringPtr(s string) *string {
 // enrichL1Fees fetches L1 fees from RPC for L2 chain transactions
 // Only fetches for transactions where the address is the sender (pays gas)
 func (s *BackfillService) enrichL1Fees(ctx context.Context, chainAdapter adapter.ChainAdapter, transactions []*types.NormalizedTransaction) error {
-	// Get the ethereum adapter to access RPC
-	ethAdapter, ok := chainAdapter.(*adapter.EthereumAdapter)
-	if !ok {
-		return fmt.Errorf("chain adapter is not an EthereumAdapter")
-	}
-
 	// Collect unique tx hashes that need L1 fee lookup
 	// Only for transactions where user is sender (they pay gas)
 	txHashSet := make(map[string]bool)
@@ -454,13 +437,37 @@ func (s *BackfillService) enrichL1Fees(ctx context.Context, chainAdapter adapter
 
 	log.Printf("[Backfill] Fetching L1 fees for %d transactions", len(txHashSet))
 
-	// Fetch L1 fees from RPC
+	// Use Etherscan to fetch L1 fees via eth_getTransactionReceipt proxy
+	// This is more reliable than Alchemy RPC which may be rate-limited
+	if s.etherscanClient != nil {
+		chain := transactions[0].Chain
+		l1Fees, err := s.etherscanClient.FetchL1Fees(ctx, txHashSet, chain)
+		if err != nil {
+			return fmt.Errorf("failed to fetch L1 fees from Etherscan: %w", err)
+		}
+
+		enriched := 0
+		for _, tx := range transactions {
+			if l1Fee, ok := l1Fees[tx.Hash]; ok {
+				tx.L1Fee = &l1Fee
+				enriched++
+			}
+		}
+		log.Printf("[Backfill] Enriched %d transactions with L1 fees (via Etherscan)", enriched)
+		return nil
+	}
+
+	// Fallback: use Alchemy RPC via chain adapter
+	ethAdapter, ok := chainAdapter.(*adapter.EthereumAdapter)
+	if !ok {
+		return fmt.Errorf("chain adapter is not an EthereumAdapter")
+	}
+
 	l1Fees, err := ethAdapter.FetchL1Fees(ctx, txHashSet)
 	if err != nil {
 		return fmt.Errorf("failed to fetch L1 fees: %w", err)
 	}
 
-	// Enrich transactions with L1 fees
 	enriched := 0
 	for _, tx := range transactions {
 		if l1Fee, ok := l1Fees[tx.Hash]; ok {

@@ -184,7 +184,7 @@ func main() {
 		txRepo,
 		chainAdapters,
 		cfg.Etherscan.APIKey,
-		cfg.Dune.APIKey,
+		cfg.NodeReal.RPCURL,
 		rateController,
 	)
 

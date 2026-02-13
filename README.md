@@ -34,7 +34,7 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 │  ┌────────────────────────┐          ┌────────────────────────┐           │
 │  │      Sync Worker       │          │    Backfill Worker     │           │
 │  │  (Real-time updates)   │          │  (Historical data)     │           │
-│  │  Alchemy RPC polling   │          │  Etherscan/Dune/Alchemy │           │
+│  │  Alchemy RPC polling   │          │  Etherscan/NodeReal/Alchemy │           │
 │  └────────────────────────┘          └────────────────────────┘           │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -42,7 +42,7 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
          ▼                                         ▼
   ┌──────────────┐                    ┌────────────────────────┐
   │   Alchemy    │                    │  Etherscan (most chains) │
-  │   RPC API    │                    │  Dune Sim (BNB chain)    │
+  │   RPC API    │                    │  NodeReal MegaNode (BNB)     │
   └──────────────┘                    └────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -58,7 +58,7 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 |-----------|-------------|
 | **API Server** | REST API handling user requests, portfolio management, transaction queries |
 | **Sync Worker** | Real-time blockchain monitoring via Alchemy RPC, polls new blocks every 15 seconds |
-| **Backfill Worker** | Fetches historical transactions (Etherscan for most chains, Dune for BNB) |
+| **Backfill Worker** | Fetches historical transactions (Etherscan for most chains, NodeReal for BNB) |
 | **Goldsky** | Streams internal transactions (traces) via webhook for ETH/Base/BNB |
 | **Postgres** | Stores metadata: users, portfolios, addresses, backfill jobs, protocols, tokens |
 | **ClickHouse** | Stores all transactions and balance snapshots, optimized for time-series queries |
@@ -73,7 +73,7 @@ Address Scanner tracks blockchain addresses across multiple chains, fetches hist
 3. Backfill job queued for each chain
 4. Backfill worker fetches history:
    - **Etherscan** (primary for most chains): Complete data with gas, methodId, funcName
-   - **Dune Sim** (primary for BNB): Etherscan free tier doesn't support BNB
+   - **NodeReal MegaNode** (primary for BNB): Etherscan V2 doesn't support BNB on free tier
    - **Alchemy** (fallback): If primary sources fail
 5. Transactions stored in ClickHouse
 6. Address marked as backfill complete
@@ -237,8 +237,8 @@ BNB_RPC_PRIMARY=https://bnb-mainnet.g.alchemy.com/v2/YOUR_KEY
 # Etherscan (for complete transaction history - most chains)
 ETHERSCAN_API_KEY=YOUR_ETHERSCAN_KEY
 
-# Dune Sim (for BNB chain - Etherscan free tier doesn't support BNB)
-DUNE_API_KEY=YOUR_DUNE_KEY
+# NodeReal MegaNode (for BNB chain - Etherscan V2 doesn't support BNB on free tier)
+NODEREAL_BSC_RPC_URL=YOUR_NODEREAL_URL
 
 # Rate Limiting (Alchemy CU budget)
 ALCHEMY_CU_PER_SECOND=500
