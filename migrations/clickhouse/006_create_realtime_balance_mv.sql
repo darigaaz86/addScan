@@ -38,22 +38,22 @@ WHERE status = 'success'
   AND transfer_type = 'native';
 
 -- MV: Native balance from transactions (outgoing + gas)
--- Only count native transfers and include gas for outgoing
+-- Gas is counted for ALL outgoing native txs (success + failed)
+-- Value transfer only counts on success
 CREATE MATERIALIZED VIEW IF NOT EXISTS native_balances_tx_out_mv
 TO native_balances_agg
 AS SELECT
     address,
     chain,
     toDecimal256(0, 0) as balance_in,
-    toDecimal256(value, 0) as balance_out,
+    toDecimal256(if(status = 'success', value, '0'), 0) as balance_out,
     toDecimal256(toUInt256OrZero(gas_used) * toUInt256OrZero(gas_price), 0) as gas_spent,
     0 as tx_count_in,
     1 as tx_count_out,
     timestamp as first_seen,
     timestamp as last_seen
 FROM transactions
-WHERE status = 'success' 
-  AND direction = 'out'
+WHERE direction = 'out'
   AND transfer_type = 'native';
 
 -- MV: Native balance from Goldsky traces (internal tx incoming)
@@ -190,16 +190,16 @@ CREATE VIEW IF NOT EXISTS native_balances_final AS
 SELECT
     address,
     chain,
-    balance_in - balance_out - gas_spent as balance,
-    balance_in,
-    balance_out,
-    gas_spent,
-    tx_count_in,
-    tx_count_out,
+    sum(balance_in) - sum(balance_out) - sum(gas_spent) as balance,
+    sum(balance_in) as total_in,
+    sum(balance_out) as total_out,
+    sum(gas_spent) as total_gas,
+    sum(tx_count_in) as total_tx_in,
+    sum(tx_count_out) as total_tx_out,
     min(first_seen) as first_seen,
     max(last_seen) as last_seen
 FROM native_balances_agg
-GROUP BY address, chain, balance_in, balance_out, gas_spent, tx_count_in, tx_count_out;
+GROUP BY address, chain;
 
 -- Backfill native balances from existing transactions (for fresh installs)
 INSERT INTO native_balances_agg
@@ -223,15 +223,14 @@ SELECT
     address,
     chain,
     toDecimal256(0, 0) as balance_in,
-    toDecimal256(value, 0) as balance_out,
+    toDecimal256(if(status = 'success', value, '0'), 0) as balance_out,
     toDecimal256(toUInt256OrZero(gas_used) * toUInt256OrZero(gas_price), 0) as gas_spent,
     0 as tx_count_in,
     1 as tx_count_out,
     timestamp as first_seen,
     timestamp as last_seen
 FROM transactions
-WHERE status = 'success' 
-  AND direction = 'out'
+WHERE direction = 'out'
   AND transfer_type = 'native';
 
 -- Backfill token balances from existing transactions (for fresh installs)

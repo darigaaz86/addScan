@@ -19,7 +19,7 @@ AS SELECT
     address,
     chain,
     toDecimal256(0, 0) as balance_in,
-    toDecimal256(value, 0) as balance_out,
+    toDecimal256(if(status = 'success', value, '0'), 0) as balance_out,
     toDecimal256(toUInt256OrZero(gas_used) * toUInt256OrZero(gas_price), 0) as gas_spent,
     toDecimal256(toUInt256OrZero(l1_fee), 0) as l1_fee_spent,
     0 as tx_count_in,
@@ -27,8 +27,7 @@ AS SELECT
     timestamp as first_seen,
     timestamp as last_seen
 FROM transactions
-WHERE status = 'success' 
-  AND direction = 'out'
+WHERE direction = 'out'
   AND transfer_type = 'native';
 
 -- Step 4: Drop and recreate the final view to subtract l1_fee_spent
@@ -38,17 +37,17 @@ CREATE VIEW native_balances_final AS
 SELECT
     address,
     chain,
-    balance_in - balance_out - gas_spent - l1_fee_spent as balance,
-    balance_in,
-    balance_out,
-    gas_spent,
-    l1_fee_spent,
-    tx_count_in,
-    tx_count_out,
+    sum(balance_in) - sum(balance_out) - sum(gas_spent) - sum(l1_fee_spent) as balance,
+    sum(balance_in) as total_in,
+    sum(balance_out) as total_out,
+    sum(gas_spent) as total_gas,
+    sum(l1_fee_spent) as total_l1_fee,
+    sum(tx_count_in) as total_tx_in,
+    sum(tx_count_out) as total_tx_out,
     min(first_seen) as first_seen,
     max(last_seen) as last_seen
 FROM native_balances_agg
-GROUP BY address, chain, balance_in, balance_out, gas_spent, l1_fee_spent, tx_count_in, tx_count_out;
+GROUP BY address, chain;
 
 -- Step 5: Backfill l1_fee_spent from existing transactions
 -- This inserts correction rows that the SummingMergeTree will merge
@@ -65,8 +64,7 @@ SELECT
     timestamp as first_seen,
     timestamp as last_seen
 FROM transactions
-WHERE status = 'success' 
-  AND direction = 'out'
+WHERE direction = 'out'
   AND transfer_type = 'native'
   AND l1_fee != ''
   AND l1_fee != '0';
