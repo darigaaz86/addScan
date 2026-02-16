@@ -234,9 +234,13 @@ func (c *NodeRealClient) convertToNormalized(t nodeRealTransfer, address string,
 		symbol := t.Asset
 		contractAddr := strings.ToLower(t.ContractAddress)
 
-		// Create gas record if user initiated and not yet created
-		isUserInitiated := strings.EqualFold(from, address) || c.isUserInitiatedToken(t, address)
-		if isUserInitiated && !gasRecordCreated[t.Hash] {
+		// Create native record for this token transfer if not yet created.
+		// Gas is only attributed if the "external" category already confirmed
+		// the tracked address as the actual tx sender (gasRecordCreated[hash] == true).
+		// We never set gas based on the ERC20 transfer's from field alone,
+		// because phishing txs can spoof the from address in token events.
+		alreadyConfirmedSender := gasRecordCreated[t.Hash]
+		if !alreadyConfirmedSender {
 			gasRecordCreated[t.Hash] = true
 			nativeCat := "native"
 			gasTx := &types.NormalizedTransaction{
@@ -250,10 +254,9 @@ func (c *NodeRealClient) convertToNormalized(t nodeRealTransfer, address string,
 				BlockNumber: blockNumber,
 				Status:      status,
 				Category:    &nativeCat,
-				GasUsed:     &gasUsed,
-				GasPrice:    &gasPrice,
 				MethodID:    methodID,
 			}
+			// No gas attribution here — only the "external" case sets gas
 			results = append(results, gasTx)
 		}
 
