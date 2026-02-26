@@ -41,6 +41,8 @@ type SyncWorker struct {
 	// Rate limiting components (optional, for backward compatibility)
 	rateLimitTracker  *ratelimit.CUBudgetTracker
 	rateLimitRegistry *ratelimit.CUCostRegistry
+	// Test hook: if set, getTrackedAddresses returns this instead of querying DB
+	trackedAddressesOverride []string
 }
 
 // SyncWorkerConfig holds configuration for a sync worker
@@ -547,6 +549,11 @@ func (w *SyncWorker) loadLastProcessedBlock(ctx context.Context) (uint64, error)
 
 // saveLastProcessedBlock saves the last processed block to database
 func (w *SyncWorker) saveLastProcessedBlock(ctx context.Context, blockNum uint64) error {
+	// Skip persistence if no sync status repo (e.g., in tests)
+	if w.syncStatusRepo == nil {
+		return nil
+	}
+
 	query := `
 		INSERT INTO worker_progress (chain, last_processed_block, updated_at)
 		VALUES ($1, $2, NOW())
@@ -665,22 +672,26 @@ func (w *SyncWorker) UpdateAddresses(ctx context.Context, transactions []*types.
 	}
 
 	// Store transactions in ClickHouse asynchronously
-	go func() {
-		bgCtx := context.Background()
-		if err := w.txRepo.BatchInsert(bgCtx, modelTransactions); err != nil {
-			log.Printf("[SyncWorker] Chain %s: failed to store transactions in ClickHouse: %v", w.chain, err)
-		}
-	}()
+	if w.txRepo != nil {
+		go func() {
+			bgCtx := context.Background()
+			if err := w.txRepo.BatchInsert(bgCtx, modelTransactions); err != nil {
+				log.Printf("[SyncWorker] Chain %s: failed to store transactions in ClickHouse: %v", w.chain, err)
+			}
+		}()
+	}
 
 	// Update cache for affected tracked addresses only
 	cacheUpdated := false
 	for address := range addressesAffected {
 		// Update cache with new transactions
-		if err := w.cache.UpdateTransactions(ctx, address, w.chain, transactions); err != nil {
-			log.Printf("[SyncWorker] Chain %s: failed to update cache for address %s: %v", w.chain, address, err)
-			// Non-fatal: cache will be populated on next query
-		} else {
-			cacheUpdated = true
+		if w.cache != nil {
+			if err := w.cache.UpdateTransactions(ctx, address, w.chain, transactions); err != nil {
+				log.Printf("[SyncWorker] Chain %s: failed to update cache for address %s: %v", w.chain, address, err)
+				// Non-fatal: cache will be populated on next query
+			} else {
+				cacheUpdated = true
+			}
 		}
 
 		// Update sync status only for tracked addresses
@@ -715,6 +726,11 @@ func (w *SyncWorker) GetStatus() *SyncWorkerStatus {
 // getTrackedAddresses retrieves all addresses being tracked for this chain
 // If tier priority is enabled, returns addresses sorted by tier (paid first)
 func (w *SyncWorker) getTrackedAddresses(ctx context.Context) ([]string, error) {
+	// Test hook: return override addresses if set
+	if w.trackedAddressesOverride != nil {
+		return w.trackedAddressesOverride, nil
+	}
+
 	// If tier priority is enabled, use the tier-aware provider
 	if w.useTierPriority && w.tierProvider != nil {
 		// Get addresses split by tier
@@ -755,6 +771,10 @@ func (w *SyncWorker) getTrackedAddresses(ctx context.Context) ([]string, error) 
 
 // updateSyncStatus updates the sync status for an address
 func (w *SyncWorker) updateSyncStatus(ctx context.Context, address string) error {
+	if w.addressRepo == nil {
+		return nil
+	}
+
 	w.mu.RLock()
 	currentBlock := w.lastBlockProcessed
 	w.mu.RUnlock()

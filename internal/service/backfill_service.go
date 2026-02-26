@@ -322,9 +322,9 @@ func (s *BackfillService) fetchHistoricalTransactions(
 
 	// For BNB chain, use NodeReal MegaNode
 	if chain == types.ChainBNB && s.nodeRealClient != nil {
-		log.Printf("[Backfill] Using NodeReal for BNB chain")
+		log.Printf("[Backfill] Using NodeReal for BNB chain (limit: %d)", limit)
 
-		transactions, fetchErr = s.nodeRealClient.FetchAllTransactions(ctx, address, chain)
+		transactions, fetchErr = s.nodeRealClient.FetchAllTransactionsWithLimit(ctx, address, chain, limit)
 		if fetchErr != nil {
 			log.Printf("[Backfill] Warning: NodeReal fetch failed: %v", fetchErr)
 		} else {
@@ -341,6 +341,11 @@ func (s *BackfillService) fetchHistoricalTransactions(
 			log.Printf("[Backfill] Warning: Etherscan fetch failed: %v", etherscanErr)
 		} else {
 			log.Printf("[Backfill] Etherscan returned %d transactions for %s", len(transactions), address)
+			// Apply limit for free tier (avoid storing excess data)
+			if limit > 0 && len(transactions) > limit {
+				log.Printf("[Backfill] Applying free tier limit: %d -> %d transactions", len(transactions), limit)
+				transactions = transactions[:limit]
+			}
 		}
 	} else if chain == types.ChainBNB {
 		// BNB without NodeReal - skip Etherscan (not supported on free tier)

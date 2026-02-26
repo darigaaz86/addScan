@@ -141,6 +141,95 @@ func (c *NodeRealClient) FetchAllTransactions(ctx context.Context, address strin
 	return allTransactions, nil
 }
 
+// FetchAllTransactionsWithLimit fetches transactions with an optional limit.
+// If limit <= 0, fetches all (same as FetchAllTransactions).
+// If limit > 0, stops pagination early once enough transactions are collected.
+func (c *NodeRealClient) FetchAllTransactionsWithLimit(ctx context.Context, address string, chain types.ChainID, limit int) ([]*types.NormalizedTransaction, error) {
+	if limit <= 0 {
+		return c.FetchAllTransactions(ctx, address, chain)
+	}
+
+	addressLower := strings.ToLower(address)
+	var allTransactions []*types.NormalizedTransaction
+	gasRecordCreated := make(map[string]bool)
+
+	for _, direction := range []string{"from", "to"} {
+		pageKey := ""
+		page := 0
+
+		for {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+
+			params := map[string]interface{}{
+				"category": []string{"external", "internal", "20", "721", "1155"},
+				"maxCount": "0x64", // 100 per page
+			}
+			if direction == "from" {
+				params["fromAddress"] = addressLower
+			} else {
+				params["toAddress"] = addressLower
+			}
+			if pageKey != "" {
+				params["pageKey"] = pageKey
+			}
+
+			result, err := c.doRPC(ctx, "nr_getAssetTransfers", []interface{}{params})
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch %s transfers: %w", direction, err)
+			}
+
+			var transferResult nodeRealTransferResult
+			if err := json.Unmarshal(result, &transferResult); err != nil {
+				return nil, fmt.Errorf("failed to parse transfer result: %w", err)
+			}
+
+			log.Printf("[NodeReal] Page %d (%s): got %d transfers for %s (collected: %d, limit: %d)",
+				page, direction, len(transferResult.Transfers), address, len(allTransactions), limit)
+
+			for _, t := range transferResult.Transfers {
+				normalized := c.convertToNormalized(t, addressLower, chain, gasRecordCreated)
+				allTransactions = append(allTransactions, normalized...)
+			}
+
+			// Stop early if we've collected enough
+			if len(allTransactions) >= limit {
+				log.Printf("[NodeReal] Reached limit %d (collected %d), stopping pagination for %s direction",
+					limit, len(allTransactions), direction)
+				break
+			}
+
+			if transferResult.PageKey == "" || len(transferResult.Transfers) == 0 {
+				break
+			}
+
+			pageKey = transferResult.PageKey
+			page++
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// Also break outer loop if limit reached
+		if len(allTransactions) >= limit {
+			break
+		}
+	}
+
+	allTransactions = c.deduplicateTransactions(allTransactions)
+
+	// Apply final limit after dedup
+	if len(allTransactions) > limit {
+		allTransactions = allTransactions[:limit]
+	}
+
+	log.Printf("[NodeReal] Total: fetched %d normalized transactions for %s on %s (limit: %d)",
+		len(allTransactions), address, chain, limit)
+
+	return allTransactions, nil
+}
+
 // convertToNormalized converts a NodeReal transfer to normalized format
 func (c *NodeRealClient) convertToNormalized(t nodeRealTransfer, address string, chain types.ChainID, gasRecordCreated map[string]bool) []*types.NormalizedTransaction {
 	var results []*types.NormalizedTransaction
@@ -339,16 +428,6 @@ func (c *NodeRealClient) convertToNormalized(t nodeRealTransfer, address string,
 	}
 
 	return results
-}
-
-// isUserInitiatedToken checks if the user initiated a token transfer tx
-// For token transfers fetched via toAddress, the "from" in the transfer is the token sender,
-// but the tx initiator might still be our tracked address
-func (c *NodeRealClient) isUserInitiatedToken(t nodeRealTransfer, address string) bool {
-	// If gasUsed > 0 and the transfer is incoming, the user might still be the tx initiator
-	// We can't know for sure without the tx_from field, so we conservatively return false
-	// The external tx query should already capture the gas record
-	return false
 }
 
 // deduplicateTransactions removes duplicate transactions that appear in both from/to queries

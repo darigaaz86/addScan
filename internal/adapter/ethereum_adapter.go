@@ -279,6 +279,54 @@ func (a *EthereumAdapter) NormalizeTransactionWithReceipt(ethTx *ethtypes.Transa
 	return normalized, nil
 }
 
+// normalizeWithReceiptAndTimestamp normalizes a transaction using receipt and a raw block timestamp.
+// This avoids go-ethereum's BlockByNumber which fails on L2 chains with unsupported tx types.
+func (a *EthereumAdapter) normalizeWithReceiptAndTimestamp(ethTx *ethtypes.Transaction, receipt *ethtypes.Receipt, blockTimestamp uint64) (*types.NormalizedTransaction, error) {
+	normalized, err := a.NormalizeTransaction(ethTx)
+	if err != nil {
+		return nil, err
+	}
+
+	normalized.BlockNumber = receipt.BlockNumber.Uint64()
+	normalized.Timestamp = int64(blockTimestamp)
+
+	if receipt.Status == ethtypes.ReceiptStatusSuccessful {
+		normalized.Status = types.StatusSuccess
+	} else {
+		normalized.Status = types.StatusFailed
+	}
+
+	gasUsedStr := fmt.Sprintf("%d", receipt.GasUsed)
+	normalized.GasUsed = &gasUsedStr
+
+	nativeAsset := GetNativeAsset(a.chainID)
+	normalized.Asset = &nativeAsset
+
+	category := "external"
+	if normalized.MethodID != nil {
+		switch *normalized.MethodID {
+		case "0x095ea7b3":
+			category = "approve"
+		case "0xa9059cbb":
+			category = "transfer"
+		default:
+			if len(ethTx.Data()) > 0 {
+				category = "contract_call"
+			}
+		}
+	} else if ethTx.To() == nil {
+		category = "contract_creation"
+	}
+	normalized.Category = &category
+
+	tokenTransfers := a.parseTokenTransfers(receipt.Logs)
+	if len(tokenTransfers) > 0 {
+		normalized.TokenTransfers = tokenTransfers
+	}
+
+	return normalized, nil
+}
+
 // parseTokenTransfers extracts ERC20 token transfers from transaction logs
 func (a *EthereumAdapter) parseTokenTransfers(logs []*ethtypes.Log) []types.TokenTransfer {
 	// ERC20 Transfer event signature: Transfer(address,address,uint256)
@@ -795,8 +843,8 @@ func (a *EthereumAdapter) FetchTransactionsForBlockRange(ctx context.Context, fr
 	}
 
 	// Fetch receipts and normalize matched transactions
-	// Group by block to minimize block fetches
-	blockCache := make(map[uint64]*ethtypes.Block)
+	// Use raw RPC for block timestamps to avoid "transaction type not supported" errors on L2 chains
+	blockTimestampCache := make(map[uint64]uint64) // blockNum -> unix timestamp
 	var transactions []*types.NormalizedTransaction
 
 	for txHash, blockNum := range matchedTxMap {
@@ -807,7 +855,12 @@ func (a *EthereumAdapter) FetchTransactionsForBlockRange(ctx context.Context, fr
 		} else {
 			tx, isPending, err = a.client.TransactionByHash(ctx, txHash)
 		}
-		if err != nil || isPending {
+		if err != nil {
+			log.Printf("[Adapter:%s] Warning: TransactionByHash failed for %s: %v", a.chainID, txHash.Hex(), err)
+			continue
+		}
+		if isPending {
+			log.Printf("[Adapter:%s] Warning: tx %s is still pending, skipping", a.chainID, txHash.Hex())
 			continue
 		}
 
@@ -818,26 +871,25 @@ func (a *EthereumAdapter) FetchTransactionsForBlockRange(ctx context.Context, fr
 			receipt, err = a.client.TransactionReceipt(ctx, txHash)
 		}
 		if err != nil {
+			log.Printf("[Adapter:%s] Warning: TransactionReceipt failed for %s: %v", a.chainID, txHash.Hex(), err)
 			continue
 		}
 
-		// Get block from cache or fetch
-		block, exists := blockCache[blockNum]
+		// Get block timestamp from cache or fetch via raw RPC
+		// (avoids go-ethereum's BlockByNumber which fails on L2 chains with unsupported tx types)
+		blockTimestamp, exists := blockTimestampCache[blockNum]
 		if !exists {
-			blockBig := new(big.Int).SetUint64(blockNum)
-			if a.rateLimitClient != nil {
-				block, err = a.rateLimitClient.BlockByNumber(ctx, blockBig)
-			} else {
-				block, err = a.client.BlockByNumber(ctx, blockBig)
-			}
+			blockTimestamp, err = a.fetchBlockTimestampRaw(ctx, rpcURL, blockNum)
 			if err != nil {
+				log.Printf("[Adapter:%s] Warning: fetchBlockTimestampRaw failed for block %d: %v", a.chainID, blockNum, err)
 				continue
 			}
-			blockCache[blockNum] = block
+			blockTimestampCache[blockNum] = blockTimestamp
 		}
 
-		normalized, err := a.NormalizeTransactionWithReceipt(tx, receipt, block)
+		normalized, err := a.normalizeWithReceiptAndTimestamp(tx, receipt, blockTimestamp)
 		if err != nil {
+			log.Printf("[Adapter:%s] Warning: normalizeWithReceiptAndTimestamp failed for %s: %v", a.chainID, txHash.Hex(), err)
 			continue
 		}
 
@@ -1539,6 +1591,73 @@ func (a *EthereumAdapter) fetchBlockTransactionsRaw(ctx context.Context, rpcURL 
 	}
 
 	return rpcResponse.Result.Transactions, nil
+}
+
+// fetchBlockTimestampRaw fetches only the block timestamp via raw JSON-RPC.
+// Uses eth_getBlockByNumber with false (no transactions) to avoid tx type parsing issues
+// that occur on L2 chains like Base with unsupported transaction types.
+func (a *EthereumAdapter) fetchBlockTimestampRaw(ctx context.Context, rpcURL string, blockNum uint64) (uint64, error) {
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "eth_getBlockByNumber",
+		"params":  []interface{}{fmt.Sprintf("0x%x", blockNum), false}, // false = no txs
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var rpcResponse struct {
+		Result *struct {
+			Timestamp string `json:"timestamp"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &rpcResponse); err != nil {
+		return 0, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if rpcResponse.Error != nil {
+		return 0, fmt.Errorf("RPC error %d: %s", rpcResponse.Error.Code, rpcResponse.Error.Message)
+	}
+
+	if rpcResponse.Result == nil {
+		return 0, fmt.Errorf("block not found")
+	}
+
+	// Parse hex timestamp
+	tsHex := strings.TrimPrefix(rpcResponse.Result.Timestamp, "0x")
+	ts := new(big.Int)
+	ts.SetString(tsHex, 16)
+	return ts.Uint64(), nil
 }
 
 // FetchL1Fees fetches L1 fees from transaction receipts for L2 chains
